@@ -73,6 +73,31 @@ flowchart LR
 
 ---
 
+## 🔒 Security & Privacy / 安全原理（为什么不需要安装 CA 证书？）
+
+很多开发者会好奇：**“TokenPulse 是怎么监控 Claude / Codex / Gemini 的 Token 消耗的？需要安装 CA 根证书抓包吗？会不会有证书或 API Key 泄漏风险？”**
+
+**答案是：完全不需要安装任何 CA 证书，也不做任何 HTTPS 流量劫持（Zero MITM）。**
+
+### 1. 传统「CA 证书抓包监控」vs. TokenPulse「旁路元数据只读解析」
+
+| 对比维度 | ❌ 传统 HTTPS 代理抓包方案 (MITM Proxy) | ✅ TokenPulse 零侵入旁路架构 |
+| :--- | :--- | :--- |
+| **工作原理** | 在系统钥匙串安装自签名 **Root CA 根证书**，劫持并解密 `api.anthropic.com` / `api.openai.com` 的 TLS 流量 | 直接**只读解析**各 AI 客户端在本地磁盘生成的官方会话元数据日志（`.jsonl`）中的数字统计字段 |
+| **CA 私钥泄漏风险** | **极高**：本地必须保存 CA 私钥以动态签发证书；一旦私钥被恶意脚本读取，全机所有网站（网银、GitHub、企业内网）HTTPS 均可被静默伪造 | **零风险**：完全不生成、不安装、不接触任何 CA 证书或系统钥匙串（`Keychain`） |
+| **API Key 暴露面** | 代理进程内存中明文流转 `Authorization: Bearer sk-...` 密钥 | **零接触**：本地日志中不含 API Key，TokenPulse 永不触碰任何鉴权凭据 |
+| **代码与 Prompt 隐私** | 全量对话正文与源码片段必须经过代理层解密 | **只读数字，不读正文**：解析器仅提取 `input_tokens`、`cache_read_input_tokens`、`output_tokens` 等整型计数器，丢弃对话内容 |
+| **网络连接稳定性** | 破坏客户端 Certificate Pinning（证书固定），常导致断连、限流或账号风控 | **100% 原生直连**：AI 客户端与官方服务器保持原生端到端 TLS 加密通信，TokenPulse 仅在旁路读取文件变更 |
+
+### 2. 五重本地安全保障（Defense-in-Depth）
+1. **100% 离线与回环隔离**：除轮询本机 Ollama（`127.0.0.1:11434`）与监听本机回环网关（`127.0.0.1:11435`，强制绑定 `.ipv4(.loopback)` 网卡）外，**没有任何外网请求或遥测上报**。
+2. **零第三方依赖（Zero Supply-Chain Risk）**：[`Package.swift`](Package.swift) 不引入任何第三方开源库，100% 基于 Apple 官方原生 `Foundation`、`Network`、`SwiftUI` 构建，彻底杜绝第三方依赖投毒。
+3. **防浏览器跨站探测（Anti-CSRF / Anti-CORS Probing）**：本地网关 `127.0.0.1:11435` 默认拒绝携带 `Origin` 或 `Sec-Fetch-Site: cross-site` 的浏览器跨域请求，防止外部恶意网页通过 JS 探测本地端口。
+4. **严格的权限收敛**：本地自定义事件目录 `~/.tokenpulse` 强制采用 `0700` 权限，数据文件强制采用 `0600`（仅当前系统用户可读写）。
+5. **代码极简可审计**：核心采集逻辑位于 [`Sources/TokenPulseCore/Adapters.swift`](Sources/TokenPulseCore/Adapters.swift)，全项目仅约 1,500 行纯 Swift 代码，5 分钟即可完成全量源码白盒审计。
+
+---
+
 ## 📦 Quick Start / 快速开始
 
 ### 1. 编译打包 macOS 状态栏应用与 CLI

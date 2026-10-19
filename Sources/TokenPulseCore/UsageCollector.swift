@@ -19,7 +19,11 @@ public final class UsageCollector: @unchecked Sendable {
             self.customEventsURL = customEventsURL
         } else {
             let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".tokenpulse")
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(
+                at: dir,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
             self.customEventsURL = dir.appendingPathComponent("custom_events.jsonl")
         }
     }
@@ -38,7 +42,11 @@ public final class UsageCollector: @unchecked Sendable {
                     handle.write(lineData)
                     try? handle.close()
                 } else {
-                    try? lineData.write(to: customEventsURL)
+                    FileManager.default.createFile(
+                        atPath: customEventsURL.path,
+                        contents: lineData,
+                        attributes: [.posixPermissions: 0o600]
+                    )
                 }
             }
         }

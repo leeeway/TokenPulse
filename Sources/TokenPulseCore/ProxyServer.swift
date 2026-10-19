@@ -80,8 +80,10 @@ public final class LocalGatewayServer: @unchecked Sendable {
         let method = String(tokens[0]).uppercased()
         let path = String(tokens[1])
 
-        if method == "OPTIONS" {
-            return Self.httpResponse(status: "204 No Content", json: "")
+        // Block cross-origin browser requests (CSRF / cross-site local port probing protection)
+        let lowerHeaders = headerPart.lowercased()
+        if lowerHeaders.contains("\r\norigin:") || lowerHeaders.contains("sec-fetch-site: cross-site") {
+            return Self.httpResponse(status: "403 Forbidden", json: "{\"error\":\"cross_origin_forbidden\"}")
         }
 
         if method == "GET" && path.hasPrefix("/v1/health") {
@@ -108,15 +110,16 @@ public final class LocalGatewayServer: @unchecked Sendable {
                 return Self.httpResponse(status: "400 Bad Request", json: "{\"error\":\"invalid_json\"}")
             }
 
-            let providerRaw = (json["provider"] as? String) ?? "proxy_gateway"
+            let providerRaw = Self.sanitizeIdentifier((json["provider"] as? String) ?? "proxy_gateway", maxLength: 64)
             let provider = AIProvider(rawValue: providerRaw) ?? .proxyGateway
-            let model = (json["model"] as? String) ?? "custom-model"
-            let sessionId = (json["session_id"] as? String) ?? "gateway"
-            let input = (json["input_tokens"] as? Int) ?? 0
-            let cacheWrite = (json["cache_write_tokens"] as? Int) ?? 0
-            let cacheRead = (json["cache_read_tokens"] as? Int) ?? 0
-            let output = (json["output_tokens"] as? Int) ?? 0
-            let reasoning = (json["reasoning_tokens"] as? Int) ?? 0
+            let model = Self.sanitizeIdentifier((json["model"] as? String) ?? "custom-model", maxLength: 128)
+            let sessionId = Self.sanitizeIdentifier((json["session_id"] as? String) ?? "gateway", maxLength: 128)
+            let maxAllowedTokens = 100_000_000
+            let input = min(max(0, (json["input_tokens"] as? Int) ?? 0), maxAllowedTokens)
+            let cacheWrite = min(max(0, (json["cache_write_tokens"] as? Int) ?? 0), maxAllowedTokens)
+            let cacheRead = min(max(0, (json["cache_read_tokens"] as? Int) ?? 0), maxAllowedTokens)
+            let output = min(max(0, (json["output_tokens"] as? Int) ?? 0), maxAllowedTokens)
+            let reasoning = min(max(0, (json["reasoning_tokens"] as? Int) ?? 0), maxAllowedTokens)
 
             let event = TokenUsageEvent(
                 id: "gw-\(UUID().uuidString)",
@@ -142,15 +145,22 @@ public final class LocalGatewayServer: @unchecked Sendable {
         return Self.httpResponse(status: "404 Not Found", json: "{\"error\":\"not_found\"}")
     }
 
+    private static func sanitizeIdentifier(_ raw: String, maxLength: Int) -> String {
+        let filtered = raw.unicodeScalars.filter { scalar in
+            scalar.value >= 0x20 && scalar.value != 0x7F
+        }
+        let clean = String(String.UnicodeScalarView(filtered)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return "unknown" }
+        return String(clean.prefix(maxLength))
+    }
+
     private static func httpResponse(status: String, json: String) -> Data {
         let utf8 = json.data(using: .utf8) ?? Data()
         let headers = [
             "HTTP/1.1 \(status)",
             "Content-Type: application/json; charset=utf-8",
             "Content-Length: \(utf8.count)",
-            "Access-Control-Allow-Origin: *",
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers: Content-Type, Authorization",
+            "X-Content-Type-Options: nosniff",
             "Connection: close",
             "",
             ""
