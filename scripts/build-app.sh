@@ -53,6 +53,8 @@ cat > "$CONTENTS_DIR/Info.plist" << 'EOF'
 </plist>
 EOF
 
+codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+
 echo "✅ Packaged macOS Menu Bar app at: $APP_BUNDLE"
 echo "✅ Built CLI binary at: $ROOT_DIR/dist/tokenpulse"
 echo "🚀 Run 'open dist/TokenPulse.app' to launch in your macOS Menu Bar!"

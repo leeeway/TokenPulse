@@ -29,11 +29,9 @@ public final class AppViewModel: ObservableObject {
     @Published public var displayMode: MenuBarDisplayMode = .tokensAndCost
     @Published public var snapshot: DashboardSnapshot
     @Published public var isRefreshing: Bool = false
-    @Published public var gatewayPort: UInt16 = 11435
     @Published public var copiedToast: Bool = false
 
     private let collector = UsageCollector()
-    private var gatewayServer: LocalGatewayServer?
     private var timer: Timer?
 
     public init() {
@@ -45,14 +43,6 @@ public final class AppViewModel: ObservableObject {
             self.selectedWindow = .thirtyDays
             self.snapshot = collector.snapshotFromCache(window: .thirtyDays)
         }
-
-        let collectorRef = self.collector
-        self.gatewayServer = LocalGatewayServer(port: 11435, collector: collectorRef) { [weak self] in
-            Task { @MainActor in
-                self?.refreshNow()
-            }
-        }
-        self.gatewayServer?.start()
 
         self.timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
             Task { @MainActor in

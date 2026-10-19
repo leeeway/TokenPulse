@@ -310,7 +310,7 @@ struct DashboardPopoverView: View {
 
             Spacer()
 
-            Text("Gateway 127.0.0.1:\(viewModel.gatewayPort)")
+            Text("100% Local Read-Only · Zero Proxy")
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundStyle(.secondary)
 

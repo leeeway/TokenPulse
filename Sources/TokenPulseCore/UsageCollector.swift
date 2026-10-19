@@ -1,6 +1,6 @@
 import Foundation
 
-/// Aggregates token usage across all registered `ProviderAdapter`s and custom gateway events.
+/// Aggregates token usage across all registered `ProviderAdapter`s and custom local JSONL events.
 public final class UsageCollector: @unchecked Sendable {
     private let adapters: [ProviderAdapter]
     private let customEventsURL: URL
@@ -28,7 +28,7 @@ public final class UsageCollector: @unchecked Sendable {
         }
     }
 
-    /// Appends a custom telemetry event (e.g. from local API Gateway `/v1/ingest`) to disk and memory.
+    /// Appends a custom telemetry event to `~/.tokenpulse/custom_events.jsonl` and memory.
     public func recordCustomEvent(_ event: TokenUsageEvent) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

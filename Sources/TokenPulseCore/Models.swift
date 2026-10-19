@@ -7,7 +7,7 @@ public enum AIProvider: String, CaseIterable, Codable, Sendable, Identifiable {
     case antigravity = "antigravity"
     case cursor = "cursor"
     case ollama = "ollama"
-    case proxyGateway = "proxy_gateway"
+    case custom = "custom"
 
     public var id: String { rawValue }
 
@@ -18,7 +18,7 @@ public enum AIProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .antigravity: return "Antigravity"
         case .cursor: return "Cursor"
         case .ollama: return "Ollama (Local)"
-        case .proxyGateway: return "API Gateway"
+        case .custom: return "Custom Tool"
         }
     }
 
@@ -29,7 +29,7 @@ public enum AIProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .antigravity: return "AGY"
         case .cursor: return "Cursor"
         case .ollama: return "Ollama"
-        case .proxyGateway: return "Proxy"
+        case .custom: return "Custom"
         }
     }
 
@@ -40,7 +40,7 @@ public enum AIProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .antigravity: return "bolt.horizontal.circle.fill"
         case .cursor: return "cursorarrow.rays"
         case .ollama: return "desktopcomputer"
-        case .proxyGateway: return "network"
+        case .custom: return "puzzlepiece.extension.fill"
         }
     }
 
@@ -52,7 +52,7 @@ public enum AIProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .antigravity: return 20.0
         case .cursor: return 20.0
         case .ollama: return 0.0
-        case .proxyGateway: return 0.0
+        case .custom: return 0.0
         }
     }
 }
