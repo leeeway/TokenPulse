@@ -1,0 +1,25 @@
+name: macOS Build & Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Swift Version
+        run: swift --version
+
+      - name: Run Unit Tests
+        run: swift test
+
+      - name: Package macOS Menu Bar App & CLI
+        run: |
+          chmod +x scripts/build-app.sh
+          ./scripts/build-app.sh
