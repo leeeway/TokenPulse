@@ -111,17 +111,24 @@ internal static class UiSnapshots
     private static void CaptureViewport(Window window, string directory, string name, Size size)
     {
         var root = (FrameworkElement)window.Content;
-        var width = root.Width; var height = root.Height;
         window.Content = null;
+        // ContentPresenter removes its old visual lazily. Flush that removal before
+        // arranging offscreen, otherwise its previous window size wins at layout time.
+        window.UpdateLayout();
+        var host = new Border { Child = root, Width = size.Width, Height = size.Height };
+        System.Windows.Documents.TextElement.SetFontFamily(host, window.FontFamily);
+        System.Windows.Documents.TextElement.SetFontSize(host, window.FontSize);
+        TextOptions.SetTextFormattingMode(host, TextFormattingMode.Display);
         try
         {
-            root.Width = size.Width; root.Height = size.Height;
-            root.Measure(size); root.Arrange(new Rect(size)); root.UpdateLayout();
+            host.Measure(size); host.Arrange(new Rect(size)); host.UpdateLayout();
+            if (Math.Abs(root.ActualWidth - size.Width) > 1 || Math.Abs(root.ActualHeight - size.Height) > 1)
+                throw new InvalidOperationException($"Viewport did not reach its requested size: {name}: {root.RenderSize}, expected {size}.");
             Save(root, directory, name);
         }
         finally
         {
-            root.Width = width; root.Height = height;
+            host.Child = null;
             window.Content = root; window.UpdateLayout();
         }
     }
