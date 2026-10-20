@@ -1,0 +1,1 @@
+{"id":"custom-1","provider":"custom","model":"my-model","timestamp":"2026-10-18T10:00:00Z","sessionId":"s1","inputTokens":100,"cacheWriteTokens":20,"cacheReadTokens":80,"outputTokens":50,"reasoningTokens":10,"costUSD":0.123,"savedByCacheUSD":0.045}

@@ -1,0 +1,44 @@
+name: Windows Build & Test
+
+on:
+  push:
+    branches: [main]
+    paths: ['windows/**', '.github/workflows/windows-ci.yml']
+  pull_request:
+    branches: [main]
+    paths: ['windows/**', '.github/workflows/windows-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: windows
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Core compatibility and filesystem tests
+        run: dotnet run --project TokenPulse.Tests/TokenPulse.Tests.csproj -c Release
+      - name: Publish self-contained Windows archive
+        run: ./scripts/build.ps1
+      - name: WPF and tray startup smoke test
+        run: |
+          $app = Start-Process ./dist/TokenPulse-Windows-x64/TokenPulse.exe -ArgumentList '--smoke-test' -PassThru
+          if (-not $app.WaitForExit(30000)) {
+            $app.Kill()
+            throw 'Startup smoke test timed out'
+          }
+          if ($app.ExitCode -ne 0) { throw "Startup smoke test failed: $($app.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TokenPulse-Windows-x64
+          path: windows/dist/TokenPulse-Windows-x64.zip
+          if-no-files-found: error
