@@ -18,6 +18,8 @@ internal sealed class App : Application
     private ScanResult? scan;
     private OllamaResult localModels = new([], "正在查询 Ollama…");
     private string? settingsWarning;
+    private long renderRevision;
+    private CancellationTokenSource? rendering;
 
     [STAThread]
     public static int Main() => new App().Run();
@@ -47,7 +49,7 @@ internal sealed class App : Application
         (settings, settingsWarning) = store.Load();
         try { settings = settings with { StartWithWindows = StartupRegistration.Read() is not null }; }
         catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException) { settingsWarning = "无法读取开机启动状态：" + ex.Message; }
-        dashboard = new MainWindow(() => _ = RefreshAsync(), OpenSettings, Render);
+        dashboard = new MainWindow(() => _ = RefreshAsync(), OpenSettings, () => _ = RenderAsync());
         MainWindow = dashboard;
         tray = new TrayIcon(dashboard.OpenNearTray, () => _ = RefreshAsync(), OpenSettings, () => Shutdown());
         dashboard.ShowError(settingsWarning);
@@ -57,9 +59,9 @@ internal sealed class App : Application
             var now = DateTimeOffset.Now;
             scan = new([UsageEvent.Create("smoke", Providers.Codex, "gpt-5-codex", now, "smoke", 1000, 0, 500, 100)], [], []);
             localModels = new([], "Smoke test");
-            Render(); dashboard.OpenNearTray();
+            _ = RenderAsync(); dashboard.OpenNearTray();
             var smokeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-            smokeTimer.Tick += (_, _) => { smokeTimer.Stop(); Shutdown(); };
+            smokeTimer.Tick += (_, _) => { smokeTimer.Stop(); Shutdown(dashboard.HasRendered ? 0 : 1); };
             smokeTimer.Start();
             return;
         }
@@ -81,7 +83,7 @@ internal sealed class App : Application
             if (currentSettings != settings || stopping.IsCancellationRequested) return;
             scan = result; localModels = models;
             dashboard?.ShowError(settingsWarning);
-            Render();
+            await RenderAsync();
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }
         catch (Exception ex) { dashboard?.ShowError("刷新失败，将在下一轮重试：" + ex.Message); }
@@ -92,12 +94,37 @@ internal sealed class App : Application
             if (currentSettings != settings && !stopping.IsCancellationRequested) _ = RefreshAsync();
         }
     }
-    private void Render()
+    private async Task RenderAsync()
     {
         if (scan is null || dashboard is null) return;
+        rendering?.Cancel();
+        using var work = CancellationTokenSource.CreateLinkedTokenSource(stopping.Token);
+        rendering = work;
+        var revision = ++renderRevision;
+        var currentScan = scan;
+        var currentModels = localModels;
+        var currentWindow = dashboard.SelectedWindow;
         var now = DateTimeOffset.Now;
-        dashboard.Render(Aggregation.Build(scan, dashboard.SelectedWindow, now), scan, localModels);
-        tray?.Update(Aggregation.Build(scan, TimeWindow.Today, now));
+        try
+        {
+            var snapshots = await Task.Run(() =>
+            {
+                var selected = Aggregation.Build(currentScan, currentWindow, now, cancellationToken: work.Token);
+                var today = currentWindow == TimeWindow.Today ? selected : Aggregation.Build(currentScan, TimeWindow.Today, now, cancellationToken: work.Token);
+                return (selected, today);
+            }, work.Token);
+            // A newer scan or period selection must win even if an earlier job finishes last.
+            if (revision != renderRevision || stopping.IsCancellationRequested) return;
+            dashboard.Render(snapshots.selected, currentScan, currentModels);
+            tray?.Update(snapshots.today);
+        }
+        catch (OperationCanceledException) when (work.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (revision == renderRevision && !stopping.IsCancellationRequested)
+                dashboard.ShowError("统计失败，将在下一轮重试：" + ex.Message);
+        }
+        finally { if (ReferenceEquals(rendering, work)) rendering = null; }
     }
     private void OpenSettings()
     {

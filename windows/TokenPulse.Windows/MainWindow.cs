@@ -31,8 +31,16 @@ internal sealed class MainWindow : Window
     private readonly System.Windows.Shapes.Ellipse connectionIndicator = new() { Width = 5, Height = 5, Fill = Ui.Green, Margin = new Thickness(0, 0, 6, 0) };
     private readonly StackPanel localModelRows = new();
     private readonly Button refreshButton;
+    private readonly Button exportButton;
+    private readonly HashSet<string> expandedProviders = [];
+    private DashboardSnapshot? renderedSnapshot;
+    private TimeWindow renderedWindow;
+    private bool exporting;
+    private IReadOnlyList<ProviderSummary>? renderedProviders;
+    private DateTimeOffset providersRenderedAt;
     private bool sourcesExpanded;
     public TimeWindow SelectedWindow { get; private set; } = TimeWindow.Today;
+    internal bool HasRendered => renderedSnapshot is not null;
     public bool AllowClose { get; set; }
 
     public MainWindow(Action refresh, Action settings, Action changeWindow)
@@ -57,7 +65,13 @@ internal sealed class MainWindow : Window
         {
             var value = (TimeWindow)index;
             var segment = new RadioButton { Content = titles[index], GroupName = "Window", IsChecked = index == 0, Style = (Style)FindResource("Segment") };
-            segment.Checked += (_, _) => { SelectedWindow = value; changeWindow(); };
+            segment.Checked += (_, _) =>
+            {
+                SelectedWindow = value;
+                exportButton!.IsEnabled = false;
+                updated.Text = "正在汇总…";
+                changeWindow();
+            };
             segments.Children.Add(segment);
         }
         top.Children.Add(new Border { Child = segments, CornerRadius = new CornerRadius(9), Background = Ui.Brush("#EEEFF6"), Padding = new Thickness(2), Margin = new Thickness(0, 17, 0, 14) });
@@ -98,7 +112,13 @@ internal sealed class MainWindow : Window
         Ui.Put(flow, new Border { Background = Ui.Blue }, 0); Ui.Put(flow, new Border { Background = Ui.Brush("#89BDBD") }, 1); Ui.Put(flow, new Border { Background = Ui.Accent }, 2);
         flowBody.Children.Add(new Border { Child = flow, Height = 5, ClipToBounds = true, CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 8, 0, 0) });
         flowBody.ToolTip = flowDetail; body.Children.Add(Ui.Card(flowBody, new Thickness(11))); Ui.Gap(body, 14);
-        body.Children.Add(Section("产品用量", providerCount)); Ui.Gap(body, 9); body.Children.Add(providerRows); Ui.Gap(body, 8);
+        var products = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto);
+        Ui.Put(products, Ui.Text("产品用量", 12, Ui.Ink, FontWeights.SemiBold), 0);
+        Ui.Put(products, providerCount, 1);
+        exportButton = Ui.IconButton("\uE896", "导出当前周期的模型用量 CSV", () => _ = ExportAsync());
+        exportButton.IsEnabled = false; exportButton.Margin = new Thickness(6, 0, 0, 0);
+        Ui.Put(products, exportButton, 2);
+        body.Children.Add(products); Ui.Gap(body, 9); body.Children.Add(providerRows); Ui.Gap(body, 8);
         var chartBody = new StackPanel(); chartBody.Children.Add(Section("近 7 天趋势", trendTotal)); Ui.Gap(chartBody, 12); chartBody.Children.Add(trend);
         body.Children.Add(Ui.Card(chartBody)); Ui.Gap(body, 10);
         localModelCard = Ui.Card(localModelRows, new Thickness(12)); localModelCard.Visibility = Visibility.Collapsed; body.Children.Add(localModelCard);
@@ -122,6 +142,8 @@ internal sealed class MainWindow : Window
     public void ShowError(string? message) { errorText.Text = message ?? ""; errorBox.Visibility = string.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible; }
     public void Render(DashboardSnapshot snapshot, ScanResult scan, OllamaResult ollama)
     {
+        renderedSnapshot = snapshot; renderedWindow = SelectedWindow;
+        exportButton.IsEnabled = !exporting;
         var t = snapshot.Totals;
         tokens.Text = Formatting.Tokens(t.Total); cache.Text = t.CacheHitRatio.ToString("P1"); cost.Text = Formatting.Usd(t.Cost);
         sessions.Text = $"{t.Sessions} 会话 · {t.Events} 步"; sessions.ToolTip = sessions.Text;
@@ -134,13 +156,19 @@ internal sealed class MainWindow : Window
         ((Border)flow.Children[0]).Background = t.Total == 0 ? Ui.Brush("#E9ECF4") : Ui.Blue;
         alertBox.Visibility = snapshot.IsHighBurnRate ? Visibility.Visible : Visibility.Collapsed;
         alertText.Text = $"近 5 分钟 {Formatting.Tokens(snapshot.Recent.Total)} Token · {Formatting.Usd(snapshot.Recent.Cost)}";
-        providerCount.Text = $"{snapshot.Providers.Count} 个来源"; providerRows.Children.Clear();
-        if (snapshot.Providers.Count == 0)
+        providerCount.Text = $"{snapshot.Providers.Count} 个来源";
+        // Keep interactive rows (and keyboard focus) intact on unchanged timer ticks.
+        if (!SameProviders(snapshot.Providers, snapshot.GeneratedAt))
         {
-            var empty = new StackPanel { Margin = new Thickness(4, 6, 4, 6) }; empty.Children.Add(Ui.Text("等待第一条用量记录", 13, Ui.Ink, FontWeights.SemiBold)); Ui.Gap(empty, 6);
-            empty.Children.Add(Ui.Text("开始使用 AI 工具，或在设置中选择日志目录。", 11, Ui.Muted)); providerRows.Children.Add(Ui.Card(empty));
+            providerRows.Children.Clear();
+            if (snapshot.Providers.Count == 0)
+            {
+                var empty = new StackPanel { Margin = new Thickness(4, 6, 4, 6) }; empty.Children.Add(Ui.Text("等待第一条用量记录", 13, Ui.Ink, FontWeights.SemiBold)); Ui.Gap(empty, 6);
+                empty.Children.Add(Ui.Text("开始使用 AI 工具，或在设置中选择日志目录。", 11, Ui.Muted)); providerRows.Children.Add(Ui.Card(empty));
+            }
+            foreach (var provider in snapshot.Providers) providerRows.Children.Add(ProviderCard(provider, snapshot.GeneratedAt));
+            renderedProviders = snapshot.Providers; providersRenderedAt = snapshot.GeneratedAt;
         }
-        foreach (var provider in snapshot.Providers) providerRows.Children.Add(ProviderCard(provider));
         RenderTrend(snapshot.Trend); localModelRows.Children.Clear(); localModelCard.Visibility = ollama.Models.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         foreach (var model in ollama.Models) localModelRows.Children.Add(Ui.Text($"{model.Name}  ·  显存 {model.VramBytes / 1073741824.0:F1} GiB", 11, Ui.Muted));
         var ready = scan.Statuses.Count(s => s.State == SourceState.Ready && s.Message != "未发现日志"); var errors = scan.Statuses.Count(s => s.State == SourceState.Error);
@@ -155,7 +183,19 @@ internal sealed class MainWindow : Window
         connection.Text = (errors > 0 ? "部分数据源需检查" : "本地只读") + $" · {Ui.Version}";
         connectionIndicator.Fill = errors > 0 ? Ui.Amber : Ui.Green;
     }
-    private static Border ProviderCard(ProviderSummary provider)
+    private bool SameProviders(IReadOnlyList<ProviderSummary> providers, DateTimeOffset now)
+    {
+        if (renderedProviders is null || renderedProviders.Count != providers.Count) return false;
+        return renderedProviders.Zip(providers).All(pair =>
+        {
+            var (old, current) = pair;
+            return old.Provider == current.Provider && old.Totals == current.Totals && old.RateLimit == current.RateLimit
+                && old.TopModels.SequenceEqual(current.TopModels) && old.Models.SequenceEqual(current.Models)
+                && (current.RateLimit?.Primary.IsExpired(now) ?? false) == (old.RateLimit?.Primary.IsExpired(providersRenderedAt) ?? false)
+                && (current.RateLimit?.Secondary?.IsExpired(now) ?? false) == (old.RateLimit?.Secondary?.IsExpired(providersRenderedAt) ?? false);
+        });
+    }
+    private Border ProviderCard(ProviderSummary provider, DateTimeOffset now)
     {
         var panel = new StackPanel(); var header = Ui.Columns(GridLength.Auto, new(1, GridUnitType.Star), GridLength.Auto);
         var (shortName, foreground, background) = provider.Provider switch
@@ -172,19 +212,84 @@ internal sealed class MainWindow : Window
         Ui.Gap(panel, 8); panel.Children.Add(Ui.Text($"↑ {Formatting.Tokens(provider.Totals.Upstream)}     ↓ {Formatting.Tokens(provider.Totals.Output)}     缓存 {provider.Totals.CacheHitRatio:P1}", 10.5, Ui.Muted));
         if (provider.RateLimit is { } quota)
         {
-            AddQuota(panel, quota.Primary); if (quota.Secondary is { } secondary) AddQuota(panel, secondary);
+            AddQuota(panel, quota.Primary, now); if (quota.Secondary is { } secondary) AddQuota(panel, secondary, now);
             panel.ToolTip = $"配额记录于 {quota.UpdatedAt.LocalDateTime:g}" + (quota.PlanType is { } plan ? $" · {plan}" : "") + "；以日志为准";
+        }
+        if (provider.Models.Count > 0)
+        {
+            var details = new StackPanel { Name = "ModelDetails", Margin = new Thickness(0, 6, 0, 0),
+                Visibility = expandedProviders.Contains(provider.Provider) ? Visibility.Visible : Visibility.Collapsed };
+            foreach (var summary in provider.Models)
+            {
+                var row = new StackPanel { Margin = new Thickness(0, 7, 0, 7) };
+                row.ToolTip = $"输入 {summary.Totals.Input:N0} · 缓存写入 {summary.Totals.CacheWrite:N0} · 缓存读取 {summary.Totals.CacheRead:N0}\n输出 {summary.Totals.Output:N0} · 推理 {summary.Totals.Reasoning:N0}（已含于输出）\n{summary.Totals.Sessions} 会话 · {summary.Totals.Events} 条记录";
+                var name = Ui.Text(summary.Model, 10.5, Ui.Ink, FontWeights.SemiBold);
+                name.ToolTip = summary.Model; row.Children.Add(name);
+                var detail = Ui.Text($"{Formatting.Tokens(summary.Totals.Total)} Token  ·  {Formatting.Usd(summary.Totals.Cost)}  ·  缓存 {summary.Totals.CacheHitRatio:P1}", 10, Ui.Muted);
+                detail.Margin = new Thickness(0, 4, 0, 0); row.Children.Add(detail); details.Children.Add(row);
+            }
+            var toggle = Ui.Button("", () => { });
+            void UpdateToggle()
+            {
+                toggle.Content = (details.Visibility == Visibility.Visible ? "收起模型明细" : $"查看 {provider.Models.Count} 个模型") + (details.Visibility == Visibility.Visible ? "  −" : "  +");
+            }
+            toggle.HorizontalAlignment = HorizontalAlignment.Left; toggle.Padding = new Thickness(0, 5, 6, 5);
+            toggle.Background = Brushes.Transparent; toggle.Margin = new Thickness(0, 6, 0, 0);
+            UpdateToggle();
+            toggle.Click += (_, _) =>
+            {
+                if (!expandedProviders.Add(provider.Provider)) expandedProviders.Remove(provider.Provider);
+                details.Visibility = expandedProviders.Contains(provider.Provider) ? Visibility.Visible : Visibility.Collapsed;
+                UpdateToggle();
+            };
+            panel.Children.Add(toggle); panel.Children.Add(details);
         }
         var card = Ui.Card(panel, new Thickness(12)); card.Margin = new Thickness(0, 0, 0, 8); return card;
     }
-    private static void AddQuota(Panel panel, QuotaWindow quota)
+    private static void AddQuota(Panel panel, QuotaWindow quota, DateTimeOffset now)
     {
         Ui.Gap(panel, 8);
         var duration = quota.WindowMinutes is { } minutes ? minutes % 1440 == 0 ? $"{minutes / 1440} 天" : minutes % 60 == 0 ? $"{minutes / 60} 小时" : $"{minutes} 分钟" : "窗口";
         var label = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto); Ui.Put(label, Ui.Text(duration + "配额", 10, Ui.Muted), 0);
-        var color = quota.UsedPercent >= 90 ? Ui.Amber : Ui.Accent; Ui.Put(label, Ui.Text($"已用 {quota.UsedPercent:F1}%", 10, color), 1); panel.Children.Add(label);
+        var expired = quota.IsExpired(now);
+        var color = expired ? Ui.Muted : quota.UsedPercent >= 90 ? Ui.Amber : Ui.Accent;
+        Ui.Put(label, Ui.Text(expired ? "已到重置时间 · 待更新" : $"已用 {quota.UsedPercent:F1}%", 10, color), 1); panel.Children.Add(label);
         var pct = Math.Clamp(quota.UsedPercent, 0, 100); var bar = Ui.Columns(new(pct, GridUnitType.Star), new(100 - pct, GridUnitType.Star)); Ui.Put(bar, new Border { Background = color, CornerRadius = new CornerRadius(2) }, 0);
-        var track = new Border { Child = bar, Height = 4, Background = Ui.Brush("#EEEDF7"), CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 6, 0, 0) }; track.ToolTip = quota.ResetsAt is { } reset ? $"重置于 {reset.LocalDateTime:g}" : "日志未提供重置时间"; panel.Children.Add(track);
+        var track = new Border { Child = bar, Height = 4, Opacity = expired ? .35 : 1, Background = Ui.Brush("#EEEDF7"), CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 6, 0, 0) };
+        track.ToolTip = (quota.ResetsAt is { } reset ? $"重置于 {reset.LocalDateTime:g}" : "日志未提供重置时间") +
+            (expired ? $"；上次记录已用 {quota.UsedPercent:F1}%，等待新的日志确认" : "");
+        panel.Children.Add(track);
+    }
+    private async Task ExportAsync()
+    {
+        if (renderedSnapshot is null || renderedWindow != SelectedWindow || exporting) return;
+        var snapshot = renderedSnapshot;
+        var period = renderedWindow;
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出模型用量", Filter = "CSV 表格 (*.csv)|*.csv", DefaultExt = ".csv", AddExtension = true,
+            FileName = $"TokenPulse-{period}-{snapshot.GeneratedAt:yyyyMMdd-HHmmss}.csv"
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        exporting = true; exportButton.IsEnabled = false;
+        try
+        {
+            await Task.Run(() =>
+            {
+                var temporary = dialog.FileName + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    using (var writer = new StreamWriter(temporary, false, new System.Text.UTF8Encoding(true)))
+                        UsageCsv.Write(writer, snapshot, period);
+                    File.Move(temporary, dialog.FileName, true);
+                }
+                finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            });
+            MessageBox.Show(this, "模型用量已导出。费用为估算值；会话数按模型分别计算，不应跨模型相加。", "导出完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        { MessageBox.Show(this, "导出失败：" + ex.Message, "TokenPulse", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        finally { exporting = false; exportButton.IsEnabled = renderedWindow == SelectedWindow; }
     }
     private void RenderTrend(IReadOnlyList<DailyPoint> points)
     {

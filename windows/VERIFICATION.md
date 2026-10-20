@@ -2,6 +2,20 @@
 
 Status recorded on 2026-10-20. Host: macOS arm64. SDK used for C#: .NET 10.0.402 installed temporarily outside the repository.
 
+## 2026-10-21 review: Windows 0.3.0
+
+Review scope: refresh/aggregation, dashboard state, quota freshness and useful drill-downs. Existing macOS files are outside this change.
+
+- **Responsiveness:** `App.Render` previously aggregated twice on the UI thread, and each aggregation repeatedly traversed history for providers and each trend day. Aggregation now accumulates totals, models and days in one event pass, runs on a worker, reuses today's snapshot, and cancels superseded work. A revision guard prevents older completions from replacing newer period selections.
+- **Quota correctness:** previously the old percentage remained visually current after the recorded reset. Expired windows now explicitly wait for a new log record; no allowance is inferred. Expiry is evaluated independently for primary/secondary quotas and updates even when logs are unchanged.
+- **Refresh interaction:** unchanged product rows previously rebuilt every tick. They now retain their controls; model expansion survives changed data as well.
+- **New drill-down/export:** per-model totals follow the selected calendar window. CSV includes summary fields only, invariant numbers, escaped/literal model names and a UTF-8 BOM. The save uses a temporary file then replaces the destination. Export is disabled while a different period is being calculated.
+- Added an independent reference comparison over 12,000 mixed events across all periods and DST, shared-session/model checks, quota reset boundaries, CSV escaping/culture checks and aggregation cancellation.
+- Added actual WPF scenarios/assertions for model expansion, unchanged-row identity, expired quotas with unchanged logs, and export readiness during period changes. Existing narrow, maximized, restored, 1080p/2K/4K and settings checks remain in place.
+- Local validation: **22 core tests passed**, WPF Release cross-compilation passed with zero warnings/errors, and the existing **3 Swift tests plus Swift Release build passed**. Windows runtime/render validation runs separately in the Windows workflow; physical mixed-DPI and interactive save-dialog testing still require Windows desktop access.
+
+Follow-up candidates: incremental parsing of very large append-only files (requires preserving cumulative counter state across truncation/rotation); real Windows mixed-DPI and Explorer restart validation. No incremental-parser shortcut or WSL discovery is introduced in this revision.
+
 ## Windows UI redesign
 
 UI source revision: `d673702`. [Windows CI](https://github.com/leeeway/TokenPulse/actions/runs/39356350336) and the independent [macOS CI](https://github.com/leeeway/TokenPulse/actions/runs/39356350330) both passed.

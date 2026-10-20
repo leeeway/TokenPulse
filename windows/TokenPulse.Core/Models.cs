@@ -32,7 +32,10 @@ public sealed record UsageEvent(string Id, string Provider, string Model, DateTi
     }
 }
 
-public sealed record QuotaWindow(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt);
+public sealed record QuotaWindow(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt)
+{
+    public bool IsExpired(DateTimeOffset now) => ResetsAt is { } reset && reset <= now;
+}
 public sealed record RateLimit(string Provider, string? PlanType, QuotaWindow Primary,
     QuotaWindow? Secondary, DateTimeOffset UpdatedAt);
 public sealed record ParsedLog(IReadOnlyList<UsageEvent> Events, RateLimit? RateLimit = null);
@@ -51,14 +54,35 @@ public sealed record UsageTotals(long Input, long CacheWrite, long CacheRead, lo
     public double CacheHitRatio => Upstream > 0 ? (double)CacheRead / Upstream : 0;
     public static UsageTotals From(IEnumerable<UsageEvent> source)
     {
-        var events = source.ToArray();
-        return new(events.Sum(e => e.InputTokens), events.Sum(e => e.CacheWriteTokens),
-            events.Sum(e => e.CacheReadTokens), events.Sum(e => e.OutputTokens),
-            events.Sum(e => e.ReasoningTokens), events.Sum(e => e.CostUSD), events.Sum(e => e.SavedByCacheUSD),
-            events.Select(e => (e.Provider, e.SessionId)).Distinct().Count(), events.Length);
+        var accumulator = new UsageAccumulator();
+        foreach (var e in source) accumulator.Add(e);
+        return accumulator.Build();
     }
 }
-public sealed record ProviderSummary(string Provider, UsageTotals Totals, string[] TopModels, RateLimit? RateLimit);
+
+internal sealed class UsageAccumulator
+{
+    private long input, write, read, output, reasoning;
+    private double cost, saved;
+    private int events;
+    private readonly HashSet<(string Provider, string Session)> sessions = [];
+    public void Add(UsageEvent e)
+    {
+        checked
+        {
+            input += e.InputTokens; write += e.CacheWriteTokens; read += e.CacheReadTokens;
+            output += e.OutputTokens; reasoning += e.ReasoningTokens; events++;
+        }
+        cost += e.CostUSD; saved += e.SavedByCacheUSD; sessions.Add((e.Provider, e.SessionId));
+    }
+    public UsageTotals Build() => new(input, write, read, output, reasoning, cost, saved, sessions.Count, events);
+}
+public sealed record ModelSummary(string Provider, string Model, UsageTotals Totals);
+public sealed record ProviderSummary(string Provider, UsageTotals Totals, string[] TopModels, RateLimit? RateLimit)
+{
+    public IReadOnlyList<ModelSummary> Models { get; init; } = [];
+}
+
 public sealed record DailyPoint(DateTime Date, long Upstream, long Output, double Cost)
 {
     public long Total => Upstream + Output;

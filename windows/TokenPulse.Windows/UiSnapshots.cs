@@ -64,6 +64,7 @@ internal static class UiSnapshots
             var more = new[]
             {
                 today,
+                UsageEvent.Create("codex-second", Providers.Codex, "gpt-5-codex", now.AddHours(-1), "preview", 12500, 1000, 32000, 800),
                 UsageEvent.Create("claude", Providers.Claude, "claude-sonnet-4-5-long-model-name", now.AddHours(-1), "claude", 12500, 6000, 160000, 8500),
                 UsageEvent.Create("gemini", Providers.Antigravity, "gemini-antigravity", now.AddHours(-1), "gemini", 40000, 0, 80000, 3000)
             };
@@ -71,6 +72,32 @@ internal static class UiSnapshots
                 sources.Select(s => s.Provider == Providers.Claude ? s with { State = SourceState.Error, Path = @"C:\Users\示例用户\开发工作区\自定义会话与日志\Claude Code\projects", Message = "访问失败：需要检查目录权限" } : s).ToArray());
             window.Width = 420; window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, new([new("qwen-local", 8_000_000_000, 6_000_000_000)], "Ollama 已连接"));
             await ShowAndCapture(window, directory, "dashboard-narrow-multiple");
+            var modelToggle = Descendants<Button>(window).Single(b => Equals(b.Content, "查看 2 个模型  +"));
+            modelToggle.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            // The four-second refresh must not collapse details the user is reading.
+            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
+            if (!Descendants<Button>(window).Contains(modelToggle))
+                throw new InvalidOperationException("Unchanged refresh rebuilt interactive model rows.");
+            await ShowAndCapture(window, directory, "dashboard-model-details");
+            if (Descendants<StackPanel>(window).Count(p => p.Name == "ModelDetails" && p.Visibility == Visibility.Visible) != 1)
+                throw new InvalidOperationException("Model expansion did not survive refresh.");
+            var expired = mixed with { RateLimits = [quota with { Primary = new(95, 300, now.AddSeconds(-1)), Secondary = new(29, 10080, now.AddDays(2)) }] };
+            window.Render(Aggregation.Build(expired, TimeWindow.Today, now), expired, models);
+            await ShowAndCapture(window, directory, "dashboard-expired-quota");
+            if (!Descendants<TextBlock>(window).Any(t => t.Text == "已到重置时间 · 待更新")
+                || Descendants<TextBlock>(window).Any(t => t.Text == "已用 95.0%"))
+                throw new InvalidOperationException("Expired quota is presented as current.");
+            // Expiry must update even when the underlying log has not changed.
+            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
+            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now.AddHours(3)), mixed, models);
+            if (!Descendants<TextBlock>(window).Any(t => t.Text == "已到重置时间 · 待更新"))
+                throw new InvalidOperationException("Unchanged quota did not expire as time advanced.");
+            var export = Descendants<Button>(window).Single(b => Equals(b.ToolTip, "导出当前周期的模型用量 CSV"));
+            if (!export.IsEnabled) throw new InvalidOperationException("Rendered summary cannot be exported.");
+            radio.IsChecked = true;
+            if (export.IsEnabled) throw new InvalidOperationException("Export must wait for the new period's summary.");
+            Descendants<RadioButton>(window).Single(r => Equals(r.Content, "今日")).IsChecked = true;
+            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
             window.SetSourcesExpanded(true);
             Descendants<ScrollViewer>(window).Single(s => s.Name == "DashboardScroll").ScrollToEnd();
             await ShowAndCapture(window, directory, "dashboard-source-details");

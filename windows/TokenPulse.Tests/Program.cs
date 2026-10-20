@@ -188,6 +188,8 @@ await Test("Cancellation is propagated", () => Sync(() =>
     using var source = new CancellationTokenSource(); source.Cancel();
     try { new LogScanner().Scan(folder.Settings, source.Token); throw new Exception("scan ignored cancellation"); }
     catch (OperationCanceledException) { }
+    try { Aggregation.Build(new([], [], []), TimeWindow.All, now, cancellationToken: source.Token); throw new Exception("aggregation ignored cancellation"); }
+    catch (OperationCanceledException) { }
 }));
 await Test("Ollama success, malformed response and disconnect clear models", async () =>
 {
@@ -214,6 +216,77 @@ await Test("Ollama timeout and caller cancellation", async () =>
     try { await client.ReadAsync(source.Token); throw new Exception("client ignored cancellation"); }
     catch (OperationCanceledException) { }
 });
+
+await Test("Single-pass aggregation matches reference for mixed histories and DST", () => Sync(() =>
+{
+    var random = new Random(42);
+    var time = DateTimeOffset.Parse("2026-11-02T12:00:00Z");
+    var zone = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+    var events = Enumerable.Range(0, 12000).Select(i => UsageEvent.Create(i.ToString(), i % 2 == 0 ? Providers.Claude : Providers.Codex,
+        "model-" + i % 5, time.AddMinutes(-random.Next(-120, 60000)), "session-" + i % 19,
+        random.Next(1000), random.Next(100), random.Next(500), random.Next(200), random.Next(30))).ToArray();
+    UsageTotals Reference(IEnumerable<UsageEvent> source)
+    {
+        var rows = source.ToArray();
+        return new(rows.Sum(e => e.InputTokens), rows.Sum(e => e.CacheWriteTokens), rows.Sum(e => e.CacheReadTokens),
+            rows.Sum(e => e.OutputTokens), rows.Sum(e => e.ReasoningTokens), rows.Sum(e => e.CostUSD), rows.Sum(e => e.SavedByCacheUSD),
+            rows.Select(e => (e.Provider, e.SessionId)).Distinct().Count(), rows.Length);
+    }
+    var today = TimeZoneInfo.ConvertTime(time, zone).Date;
+    foreach (var period in Enum.GetValues<TimeWindow>())
+    {
+        var start = today.AddDays(period == TimeWindow.SevenDays ? -6 : period == TimeWindow.ThirtyDays ? -29 : 0);
+        var selected = events.Where(e => period == TimeWindow.All || TimeZoneInfo.ConvertTime(e.Timestamp, zone).Date >= start).ToArray();
+        var snapshot = Aggregation.Build(new(events, [], []), period, time, zone);
+        Equal(Reference(selected), snapshot.Totals);
+        Equal(Reference(events.Where(e => e.Timestamp >= time.AddMinutes(-5) && e.Timestamp <= time.AddSeconds(60))), snapshot.Recent);
+        foreach (var day in snapshot.Trend)
+        {
+            var expected = Reference(events.Where(e => TimeZoneInfo.ConvertTime(e.Timestamp, zone).Date == day.Date));
+            Equal(expected.Total, day.Total); Near(expected.Cost, day.Cost);
+        }
+        foreach (var provider in snapshot.Providers)
+        {
+            Equal(Reference(selected.Where(e => e.Provider == provider.Provider)), provider.Totals);
+            foreach (var model in provider.Models)
+                Equal(Reference(selected.Where(e => e.Provider == model.Provider && e.Model == model.Model)), model.Totals);
+            Equal(provider.Totals.Total, provider.Models.Sum(m => m.Totals.Total));
+        }
+    }
+}));
+await Test("Models share sessions without double-counting provider totals; quota expiry boundary", () => Sync(() =>
+{
+    var rows = new[] { UsageEvent.Create("a", Providers.Codex, "a", now, "shared", 100, 10, 50, 20),
+        UsageEvent.Create("b", Providers.Codex, "b", now, "shared", 200, 0, 0, 30),
+        UsageEvent.Create("c", Providers.Codex, "old", now.AddDays(-1), "yesterday", 999, 0, 0, 0) };
+    var provider = Aggregation.Build(new(rows, [], []), TimeWindow.Today, now, TimeZoneInfo.Utc).Providers.Single();
+    Equal(2, provider.Models.Count); Equal(1, provider.Totals.Sessions);
+    Equal("b", provider.Models[0].Model); Equal(2, provider.Models.Sum(m => m.Totals.Sessions));
+    Check(new QuotaWindow(95, 300, now).IsExpired(now), "reset boundary must expire");
+    Check(!new QuotaWindow(95, 300, now.AddSeconds(1)).IsExpired(now), "future reset expired early");
+    Check(!new QuotaWindow(95, 300, null).IsExpired(now), "missing reset must not invent expiry");
+}));
+await Test("CSV uses invariant numbers, escaped model names and literal spreadsheet cells", () => Sync(() =>
+{
+    var oldCulture = System.Globalization.CultureInfo.CurrentCulture;
+    try
+    {
+        System.Globalization.CultureInfo.CurrentCulture = new("fr-FR");
+        var names = new[] { "中文,模型\"测试", "=1+1", "  @SUM(A1)", "line\nmodel", "-2+3", "+1+1", "normal" };
+        var rows = names.Select((name, i) => new UsageEvent(i.ToString(), Providers.Custom, name, now, "private-session", 10, 20, 30, 40, 5, .123, .045)).ToArray();
+        var snapshot = Aggregation.Build(new(rows, [], []), TimeWindow.Today, now, TimeZoneInfo.Utc);
+        using var writer = new StringWriter(); UsageCsv.Write(writer, snapshot, TimeWindow.Today);
+        var csv = writer.ToString();
+        Check(csv.Contains("\"中文,模型\"\"测试\""), "CSV did not escape commas/quotes");
+        foreach (var name in names.Where(n => n != names[0] && n != "normal"))
+            Check(csv.Contains("\"'" + name + "\""), "unsafe spreadsheet cell: " + name);
+        Check(csv.Contains(",10,20,30,40,5,100,0.5,0.123,0.045,1,1"), "numeric output changed with culture or reasoning was double-counted");
+        Check(!csv.Contains("private-session"), "session ID leaked into summary");
+        using var empty = new StringWriter(); UsageCsv.Write(empty, Aggregation.Build(new([], [], []), TimeWindow.All, now), TimeWindow.All);
+        Equal(1, empty.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+    finally { System.Globalization.CultureInfo.CurrentCulture = oldCulture; }
+}));
 
 Console.WriteLine($"{passed} passed, {failures} failed.");
 return failures == 0 ? 0 : 1;
