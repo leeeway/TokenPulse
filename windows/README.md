@@ -17,6 +17,12 @@
 
 Windows 面板采用紧凑的圆角窗口、分段周期选择、三张用量指标卡和统一的紫色图表。顶部可拖动窗口；右上角关闭按钮隐藏到托盘。数据源详细路径收在面板底部的可展开区域，访问错误会显示摘要。橙色托盘闪电表示消耗速度预警，保持与正常状态一致的图形。
 
+以下为 Windows CI 实际 WPF 渲染图，使用合成数据：
+
+![TokenPulse Windows 用量面板](docs/dashboard.png)
+
+![TokenPulse Windows 偏好设置](docs/settings.png)
+
 每次 Windows CI 还会生成 `Windows-UI-previews` 附件：使用合成数据直接渲染 WPF 的正常、预警、空数据、窄窗口多来源、数据源详情和设置页，分别导出 100% 与 150% 图像。截图不含真实用户日志。可在 Windows 上手动运行：
 
 ```powershell

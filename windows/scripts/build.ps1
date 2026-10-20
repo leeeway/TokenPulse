@@ -11,6 +11,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
     Copy-Item README.md (Join-Path $OutputDirectory "README.md")
     Copy-Item LICENSE (Join-Path $OutputDirectory "LICENSE.TokenPulse.txt")
+    Copy-Item docs (Join-Path $OutputDirectory "docs") -Recurse
     Compress-Archive -Path "$OutputDirectory/*" -DestinationPath $Archive -Force
     Write-Host "Created $Archive"
 } finally { Pop-Location }
