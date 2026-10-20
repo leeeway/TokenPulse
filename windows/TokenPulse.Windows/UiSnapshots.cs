@@ -9,7 +9,9 @@ internal static class UiSnapshots
     public static async Task CaptureAsync(string directory)
     {
         Directory.CreateDirectory(directory);
-        var now = DateTimeOffset.Now;
+        // Keep all synthetic "today" records on one local date, even when CI runs
+        // around midnight. Historical/expiry scenarios must not depend on wall time.
+        var now = new DateTimeOffset(new DateTime(2026, 10, 21, 12, 0, 0, DateTimeKind.Local));
         var today = new UsageEvent("preview", Providers.Codex, "gpt-6.1-sol", now.AddMinutes(-1), "preview", 91000, 0, 1154000, 6600, 764, .81, 1.73);
         var events = new List<UsageEvent> { today };
         long[] history = [3250000, 2460000, 4230000, 0, 8760000, 3120000];
