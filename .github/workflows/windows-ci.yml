@@ -37,6 +37,20 @@ jobs:
             throw 'Startup smoke test timed out'
           }
           if ($app.ExitCode -ne 0) { throw "Startup smoke test failed: $($app.ExitCode)" }
+      - name: Render WPF visual scenarios
+        run: |
+          $app = Start-Process ./dist/TokenPulse-Windows-x64/TokenPulse.exe -ArgumentList '--visual-test', 'dist/ui-previews' -PassThru
+          if (-not $app.WaitForExit(60000)) {
+            $app.Kill()
+            throw 'Visual verification timed out'
+          }
+          if ($app.ExitCode -ne 0) { throw "Visual verification failed: $($app.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Windows-UI-previews
+          path: windows/dist/ui-previews
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: TokenPulse-Windows-x64

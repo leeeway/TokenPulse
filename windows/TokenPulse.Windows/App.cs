@@ -26,6 +26,18 @@ internal sealed class App : Application
     {
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/TokenPulse;component/Theme.xaml", UriKind.Relative) });
+        if (e.Args.Contains("--visual-test"))
+        {
+            var index = Array.IndexOf(e.Args, "--visual-test");
+            var directory = index + 1 < e.Args.Length ? e.Args[index + 1] : Path.Combine(AppContext.BaseDirectory, "ui-previews");
+            Dispatcher.BeginInvoke(async () =>
+            {
+                try { await UiSnapshots.CaptureAsync(directory); Shutdown(0); }
+                catch (Exception ex) { Directory.CreateDirectory(directory); File.WriteAllText(Path.Combine(directory, "failure.txt"), ex.ToString()); Shutdown(1); }
+            });
+            return;
+        }
         var smoke = e.Args.Contains("--smoke-test");
         instance = new Mutex(true, @"Local\TokenPulse.Windows." + WindowsIdentity.GetCurrent().User?.Value + (smoke ? ".Smoke" : ""), out ownsMutex);
         if (!ownsMutex)
@@ -60,6 +72,7 @@ internal sealed class App : Application
     {
         if (refreshing || stopping.IsCancellationRequested) return;
         refreshing = true;
+        dashboard?.SetRefreshing(true);
         var currentSettings = settings;
         try
         {
@@ -75,6 +88,7 @@ internal sealed class App : Application
         finally
         {
             refreshing = false;
+            dashboard?.SetRefreshing(false);
             if (currentSettings != settings && !stopping.IsCancellationRequested) _ = RefreshAsync();
         }
     }

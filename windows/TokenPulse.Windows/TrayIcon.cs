@@ -27,19 +27,19 @@ internal sealed class TrayIcon : IDisposable
         var text = $"TokenPulse · 今日 {Formatting.Tokens(today.Totals.Total)} · {Formatting.Usd(today.Totals.Cost)}";
         notify.Text = text.Length <= 63 ? text : text[..63];
     }
-    private static Icon CreateIcon(bool alert)
+    internal static Icon CreateIcon(bool alert)
     {
         using var bitmap = new Bitmap(32, 32);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        using var background = new SolidBrush(alert ? System.Drawing.Color.FromArgb(234, 88, 12) : System.Drawing.Color.FromArgb(37, 99, 235));
-        graphics.FillEllipse(background, 1, 1, 30, 30);
-        if (alert)
-        {
-            graphics.FillRectangle(System.Drawing.Brushes.White, 14, 7, 4, 12);
-            graphics.FillEllipse(System.Drawing.Brushes.White, 14, 22, 4, 4);
-        }
-        else graphics.FillPolygon(System.Drawing.Brushes.White, new System.Drawing.Point[] { new(18, 5), new(9, 18), new(15, 18), new(13, 27), new(24, 13), new(18, 13) });
+        using var background = new System.Drawing.Drawing2D.LinearGradientBrush(new Rectangle(0, 0, 32, 32),
+            alert ? System.Drawing.Color.FromArgb(240, 165, 76) : System.Drawing.Color.FromArgb(153, 133, 237),
+            alert ? System.Drawing.Color.FromArgb(209, 119, 39) : System.Drawing.Color.FromArgb(111, 91, 207), 60f);
+        using var shape = new System.Drawing.Drawing2D.GraphicsPath();
+        shape.AddArc(1, 1, 14, 14, 180, 90); shape.AddArc(17, 1, 14, 14, 270, 90);
+        shape.AddArc(17, 17, 14, 14, 0, 90); shape.AddArc(1, 17, 14, 14, 90, 90); shape.CloseFigure();
+        graphics.FillPath(background, shape);
+        graphics.FillPolygon(System.Drawing.Brushes.White, new System.Drawing.Point[] { new(18, 5), new(9, 18), new(15, 18), new(13, 27), new(24, 13), new(18, 13) });
         var handle = bitmap.GetHicon();
         try { using var icon = Icon.FromHandle(handle); return (Icon)icon.Clone(); }
         finally { DestroyIcon(handle); }
