@@ -6,6 +6,7 @@ namespace TokenPulse.Windows;
 
 internal static class Ui
 {
+    public static string Version => typeof(Ui).Assembly.GetName().Version?.ToString(3) ?? "dev";
     public static readonly SolidColorBrush Ink = Brush("#25263D"), Muted = Brush("#73778C"), Accent = Brush("#7162DF"),
         Green = Brush("#228A6A"), Blue = Brush("#478BCC"), Amber = Brush("#B9792E");
     public static SolidColorBrush Brush(string hex) => (SolidColorBrush)new BrushConverter().ConvertFromString(hex)!;
@@ -57,7 +58,11 @@ internal static class Ui
             var target = e.OriginalSource as DependencyObject;
             while (target is not null && target is not System.Windows.Controls.Button)
                 target = target is FrameworkContentElement content ? content.Parent : VisualTreeHelper.GetParent(target);
-            if (target is null && e.ButtonState == MouseButtonState.Pressed) window.DragMove();
+            if (target is null && e.ButtonState == MouseButtonState.Pressed)
+            {
+                if (e.ClickCount == 2) ToggleMaximize(window);
+                else window.DragMove();
+            }
         };
         var logo = new Border { Width = 34, Height = 34, CornerRadius = new CornerRadius(10),
             Background = new LinearGradientBrush(Color.FromRgb(143, 126, 237), Color.FromRgb(103, 84, 206), 45), Margin = new Thickness(0, 0, 10, 0) };
@@ -89,12 +94,29 @@ internal static class Ui
             var preference = 2; // DWMWCP_ROUND; unsupported Windows versions safely ignore the request.
             DwmSetWindowAttribute(new System.Windows.Interop.WindowInteropHelper(window).Handle, 33, ref preference, sizeof(int));
         };
+        window.StateChanged += (_, _) =>
+        {
+            if (window.Content is Border shell)
+            {
+                shell.CornerRadius = new CornerRadius(window.WindowState == WindowState.Maximized ? 0 : 14);
+                shell.BorderThickness = new Thickness(window.WindowState == WindowState.Maximized ? 0 : 1);
+            }
+        };
     }
+    public static void ToggleMaximize(Window window) => window.WindowState = window.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
-    public static Border Shell(UIElement content) => new()
+    public static Border Shell(FrameworkElement content, double maxWidth = 520, double maxHeight = 820)
     {
-        Child = content, Background = Brush("#F7F8FC"), BorderBrush = Brush("#DFE2ED"),
-        BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(14), Padding = new Thickness(0)
-    };
+        // Stretch within a normal popup, then center the bounded panel in large windows.
+        // Constrain the content, not the Window: maximize and OS snapping remain functional.
+        content.MaxWidth = maxWidth;
+        content.MaxHeight = maxHeight;
+        var viewport = new Grid(); viewport.Children.Add(content);
+        return new Border
+        {
+            Child = viewport, Background = Brush("#F7F8FC"), BorderBrush = Brush("#DFE2ED"),
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(14), Padding = new Thickness(0)
+        };
+    }
 }

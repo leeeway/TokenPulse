@@ -24,7 +24,7 @@ internal sealed class TrayIcon : IDisposable
     public void Update(DashboardSnapshot today)
     {
         notify.Icon = today.IsHighBurnRate ? warning : normal;
-        var text = $"TokenPulse · 今日 {Formatting.Tokens(today.Totals.Total)} · {Formatting.Usd(today.Totals.Cost)}";
+        var text = $"TokenPulse {Ui.Version} · 今日 {Formatting.Tokens(today.Totals.Total)} · {Formatting.Usd(today.Totals.Cost)}";
         notify.Text = text.Length <= 63 ? text : text[..63];
     }
     internal static Icon CreateIcon(bool alert)

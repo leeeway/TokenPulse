@@ -37,13 +37,20 @@ internal sealed class MainWindow : Window
 
     public MainWindow(Action refresh, Action settings, Action changeWindow)
     {
-        Title = "TokenPulse"; Width = 468; Height = 740; MinWidth = 420; MinHeight = 500;
+        Title = $"TokenPulse · {Ui.Version}"; Width = 468; Height = 740; MinWidth = 420; MinHeight = 500;
         ShowInTaskbar = false; Ui.ConfigureWindow(this);
         using (var icon = TrayIcon.CreateIcon(false)) Icon = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
-        var root = new DockPanel { Margin = new Thickness(19, 18, 19, 0) };
+        var root = new DockPanel { Name = "DashboardContent", Margin = new Thickness(19, 18, 19, 0) };
         var top = new StackPanel();
         refreshButton = Ui.IconButton("\uE72C", "刷新本地日志", refresh);
-        top.Children.Add(Ui.Header(this, "TokenPulse", "你的 AI 用量，一眼掌握", refreshButton, Ui.IconButton("\uE713", "偏好设置", settings)));
+        var maximize = Ui.IconButton("\uE922", "最大化", () => Ui.ToggleMaximize(this));
+        StateChanged += (_, _) =>
+        {
+            maximize.Content = Ui.Glyph(WindowState == WindowState.Maximized ? "\uE923" : "\uE922");
+            maximize.ToolTip = WindowState == WindowState.Maximized ? "还原窗口" : "最大化";
+            System.Windows.Automation.AutomationProperties.SetName(maximize, (string)maximize.ToolTip);
+        };
+        top.Children.Add(Ui.Header(this, "TokenPulse", "你的 AI 用量，一眼掌握", refreshButton, Ui.IconButton("\uE713", "偏好设置", settings), maximize));
         var segments = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1, Columns = 4 };
         string[] titles = ["今日", "近 7 天", "近 30 天", "全部"];
         for (var index = 0; index < titles.Length; index++)
@@ -144,7 +151,8 @@ internal sealed class MainWindow : Window
             var row = new StackPanel { Margin = new Thickness(3, 0, 0, 12) }; row.Children.Add(Ui.Text($"{Providers.Name(source.Provider)} · {source.Message}", 10.5, source.State == SourceState.Error ? Ui.Amber : Ui.Muted));
             var path = Ui.Text(source.Path, 10, Ui.Muted); path.Margin = new Thickness(0, 3, 0, 0); row.Children.Add(path); sourceRows.Children.Add(row);
         }
-        sourceRows.Children.Add(Ui.Text(ollama.Status, 10.5, Ui.Muted)); updated.Text = $"更新于 {snapshot.GeneratedAt.LocalDateTime:HH:mm:ss}"; connection.Text = errors > 0 ? "部分数据源需检查" : "本地只读";
+        sourceRows.Children.Add(Ui.Text(ollama.Status, 10.5, Ui.Muted)); updated.Text = $"更新于 {snapshot.GeneratedAt.LocalDateTime:HH:mm:ss}";
+        connection.Text = (errors > 0 ? "部分数据源需检查" : "本地只读") + $" · {Ui.Version}";
         connectionIndicator.Fill = errors > 0 ? Ui.Amber : Ui.Green;
     }
     private static Border ProviderCard(ProviderSummary provider)
@@ -194,10 +202,14 @@ internal sealed class MainWindow : Window
     }
     public void OpenNearTray()
     {
-        if (IsVisible) { Activate(); return; } Show(); var area = Forms.Screen.FromPoint(Forms.Cursor.Position).WorkingArea; var handle = new WindowInteropHelper(this).Handle;
+        if (IsVisible) { Activate(); return; }
+        Show();
+        if (WindowState == WindowState.Maximized) { Activate(); return; }
+        var area = Forms.Screen.FromPoint(Forms.Cursor.Position).WorkingArea; var handle = new WindowInteropHelper(this).Handle;
         NativePosition.SetWindowPos(handle, IntPtr.Zero, area.Left, area.Top, 0, 0, 0x0015);
-        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity; var available = transform.Transform(new Vector(area.Width - 24, area.Height - 24));
-        MaxHeight = Math.Max(MinHeight, available.Y); MaxWidth = Math.Max(MinWidth, available.X); UpdateLayout();
+        // Clamp only this initial placement. Persistent Window.MaxWidth/MaxHeight constraints
+        // would also constrain a later OS maximize or a move to another monitor.
+        UpdateLayout();
         if (NativePosition.GetWindowRect(handle, out var bounds))
         {
             var width = Math.Min(bounds.Right - bounds.Left, area.Width - 24); var height = Math.Min(bounds.Bottom - bounds.Top, area.Height - 24);

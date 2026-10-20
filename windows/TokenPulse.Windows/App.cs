@@ -42,7 +42,7 @@ internal sealed class App : Application
         instance = new Mutex(true, @"Local\TokenPulse.Windows." + WindowsIdentity.GetCurrent().User?.Value + (smoke ? ".Smoke" : ""), out ownsMutex);
         if (!ownsMutex)
         {
-            MessageBox.Show("TokenPulse 已在运行，请点击右下角托盘图标。", "TokenPulse"); Shutdown(); return;
+            MessageBox.Show($"TokenPulse 已在运行。\n\n如果正在更新，请先从原托盘菜单选择「退出」，再启动新版 {Ui.Version}。", $"TokenPulse {Ui.Version}"); Shutdown(); return;
         }
         (settings, settingsWarning) = store.Load();
         try { settings = settings with { StartWithWindows = StartupRegistration.Read() is not null }; }

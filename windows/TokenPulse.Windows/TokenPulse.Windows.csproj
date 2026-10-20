@@ -8,6 +8,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TokenPulse</AssemblyName>
+    <Version>0.2.1</Version>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../TokenPulse.Core/TokenPulse.Core.csproj" /></ItemGroup>
 </Project>

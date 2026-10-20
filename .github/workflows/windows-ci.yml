@@ -40,7 +40,7 @@ jobs:
       - name: Render WPF visual scenarios
         run: |
           $app = Start-Process ./dist/TokenPulse-Windows-x64/TokenPulse.exe -ArgumentList '--visual-test', 'dist/ui-previews' -PassThru
-          if (-not $app.WaitForExit(60000)) {
+          if (-not $app.WaitForExit(120000)) {
             $app.Kill()
             throw 'Visual verification timed out'
           }

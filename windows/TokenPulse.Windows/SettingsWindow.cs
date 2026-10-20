@@ -4,17 +4,17 @@ internal sealed class SettingsWindow : Window
 {
     public SettingsWindow(Settings settings, Func<Settings, string?> save)
     {
-        Title = "TokenPulse 偏好设置"; Width = 540; Height = 680; MinWidth = 460; MinHeight = 500;
+        Title = $"TokenPulse 偏好设置 · {Ui.Version}"; Width = 540; Height = 680; MinWidth = 460; MinHeight = 500;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Ui.ConfigureWindow(this);
-        var root = new DockPanel { Margin = new Thickness(20, 18, 20, 16) };
+        var root = new DockPanel { Name = "SettingsContent", Margin = new Thickness(20, 18, 20, 16) };
         var header = Ui.Header(this, "偏好设置", "让 TokenPulse 适合你的工作方式");
         header.Margin = new Thickness(0, 0, 0, 20); DockPanel.SetDock(header, Dock.Top); root.Children.Add(header);
         var bottom = new StackPanel();
         var error = Ui.Text("", 11, Ui.Brush("#B44C48")); error.Visibility = Visibility.Collapsed;
         error.Margin = new Thickness(0, 8, 0, 10); bottom.Children.Add(error);
         var buttons = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto, new(8), GridLength.Auto);
-        Ui.Put(buttons, Ui.Text("设置仅保存在当前设备", 10, Ui.Muted), 0);
+        Ui.Put(buttons, Ui.Text($"{Ui.Version} · 当前设备", 10, Ui.Muted), 0);
         var cancel = Ui.Button("取消", Close); cancel.IsCancel = true; Ui.Put(buttons, cancel, 1);
         var saveButton = Ui.Button("保存设置", () => { }, true); saveButton.IsDefault = true; Ui.Put(buttons, saveButton, 3);
         bottom.Children.Add(buttons); bottom.Margin = new Thickness(0, 12, 0, 0);
@@ -83,6 +83,6 @@ internal sealed class SettingsWindow : Window
             { error.Text = ex.Message; error.Visibility = Visibility.Visible; }
         };
         root.Children.Add(new ScrollViewer { Name = "SettingsScroll", Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
-        Content = Ui.Shell(root);
+        Content = Ui.Shell(root, 560, 760);
     }
 }

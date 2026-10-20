@@ -28,6 +28,22 @@ internal static class UiSnapshots
         {
             window.Render(Aggregation.Build(scan, TimeWindow.Today, now), scan, models);
             await ShowAndCapture(window, directory, "dashboard-warning");
+            foreach (var size in new[] { new Size(1920, 1080), new Size(2560, 1440), new Size(3840, 2160) })
+                CaptureViewport(window, directory, $"dashboard-wide-{(int)size.Width}", size);
+            window.OpenNearTray();
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            var restoreBounds = window.RestoreBounds;
+            Ui.ToggleMaximize(window);
+            await ShowAndCapture(window, directory, "dashboard-maximized");
+            if (window.WindowState != WindowState.Maximized) throw new InvalidOperationException("Maximize did not enter the maximized state.");
+            window.Close();
+            window.OpenNearTray();
+            if (window.WindowState != WindowState.Maximized) throw new InvalidOperationException("Reopening a maximized dashboard lost its window state.");
+            Ui.ToggleMaximize(window);
+            await ShowAndCapture(window, directory, "dashboard-restored");
+            if (window.WindowState != WindowState.Normal || Math.Abs(window.RestoreBounds.Width - restoreBounds.Width) > 2
+                || Math.Abs(window.RestoreBounds.Height - restoreBounds.Height) > 2)
+                throw new InvalidOperationException("Restoring the dashboard did not preserve its normal bounds.");
             var radio = Descendants<RadioButton>(window).Single(r => Equals(r.Content, "近 7 天"));
             changed = 0;
             radio.IsChecked = true;
@@ -65,6 +81,11 @@ internal static class UiSnapshots
         try
         {
             await ShowAndCapture(settings, directory, "settings");
+            CaptureViewport(settings, directory, "settings-wide-1920", new Size(1920, 1080));
+            Ui.ToggleMaximize(settings);
+            await ShowAndCapture(settings, directory, "settings-maximized");
+            if (settings.WindowState != WindowState.Maximized) throw new InvalidOperationException("Settings did not maximize.");
+            Ui.ToggleMaximize(settings);
             Descendants<ScrollViewer>(settings).Single(s => s.Name == "SettingsScroll").ScrollToEnd();
             await ShowAndCapture(settings, directory, "settings-preferences");
             if (Descendants<CheckBox>(settings).Count() != 2) throw new InvalidOperationException("Expected two preference switches.");
@@ -76,7 +97,7 @@ internal static class UiSnapshots
             using var bitmap = icon.ToBitmap();
             bitmap.Save(Path.Combine(directory, warning ? "tray-warning.png" : "tray-normal.png"), System.Drawing.Imaging.ImageFormat.Png);
         }
-        File.WriteAllText(Path.Combine(directory, "README.txt"), "Actual WPF renders with synthetic data, exported at 96 and 144 DPI. These verify layout and initialization, not physical mixed-DPI monitor behavior. Segment selection, hide-on-close and preference control construction were exercised. No user logs or settings were read or written.");
+        File.WriteAllText(Path.Combine(directory, "README.txt"), $"TokenPulse {Ui.Version}. Actual WPF renders with synthetic data, exported at 96 and 144 DPI. Wide cases explicitly measure the same visual tree at 1920/2560/3840 pixel viewports; maximized cases exercise real WindowState.Maximized on the CI desktop. Bounded content widths and horizontal centering are asserted for every capture. Maximize/restore and reopen-while-maximized are exercised. These do not replace physical mixed-DPI monitor testing. No user logs or settings were read or written.");
     }
     private static async Task ShowAndCapture(Window window, string directory, string name)
     {
@@ -85,6 +106,32 @@ internal static class UiSnapshots
         window.UpdateLayout();
         var root = (FrameworkElement)window.Content;
         if (root.ActualWidth < 100 || root.ActualHeight < 100) throw new InvalidOperationException("Window did not lay out.");
+        Save(root, directory, name);
+    }
+    private static void CaptureViewport(Window window, string directory, string name, Size size)
+    {
+        var root = (FrameworkElement)window.Content;
+        var width = root.Width; var height = root.Height;
+        window.Content = null;
+        try
+        {
+            root.Width = size.Width; root.Height = size.Height;
+            root.Measure(size); root.Arrange(new Rect(size)); root.UpdateLayout();
+            Save(root, directory, name);
+        }
+        finally
+        {
+            root.Width = width; root.Height = height;
+            window.Content = root; window.UpdateLayout();
+        }
+    }
+    private static void Save(FrameworkElement root, string directory, string name)
+    {
+        var panel = Descendants<FrameworkElement>(root).Single(e => e.Name is "DashboardContent" or "SettingsContent");
+        var bounds = panel.TransformToAncestor(root).TransformBounds(new Rect(panel.RenderSize));
+        if (panel.ActualWidth > panel.MaxWidth + 1 || panel.ActualHeight > panel.MaxHeight + 1
+            || Math.Abs((bounds.Left + bounds.Right) / 2 - root.ActualWidth / 2) > 2)
+            throw new InvalidOperationException($"Content exceeded its bounds or lost centering: {name}, panel {bounds}, root {root.RenderSize}.");
         foreach (var scale in new[] { 1.0, 1.5 })
         {
             var visual = new DrawingVisual();
