@@ -41,6 +41,10 @@ internal static class UiSnapshots
             var empty = new ScanResult([], [], sources.Select(s => s with { State = SourceState.Missing, Message = "未发现日志" }).ToArray());
             window.Render(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
             await ShowAndCapture(window, directory, "dashboard-empty");
+            var large = new ScanResult([today with { InputTokens = 91_000_000, CacheReadTokens = 1_154_000_000, CostUSD = 1_234_567.8 }], [], sources);
+            window.Width = 420;
+            window.Render(Aggregation.Build(large, TimeWindow.Today, now), large, models);
+            await ShowAndCapture(window, directory, "dashboard-large-values");
             var more = new[]
             {
                 today,
@@ -56,7 +60,8 @@ internal static class UiSnapshots
             await ShowAndCapture(window, directory, "dashboard-source-details");
         }
         finally { window.AllowClose = true; window.Close(); }
-        var settings = new SettingsWindow(new Settings { StartWithWindows = true }, _ => null);
+        var settings = new SettingsWindow(new Settings { StartWithWindows = true, ClaudeDirectory = sources[1].Path,
+            CodexDirectory = sources[0].Path, AntigravityDirectory = sources[2].Path, CustomEventsFile = sources[3].Path }, _ => null);
         try
         {
             await ShowAndCapture(settings, directory, "settings");

@@ -84,7 +84,7 @@
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
             <Border x:Name="InputBody" CornerRadius="7" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                    BorderThickness="{TemplateBinding BorderThickness}" Background="{TemplateBinding Background}">
                 <ScrollViewer x:Name="PART_ContentHost" />
             </Border>
             <ControlTemplate.Triggers>

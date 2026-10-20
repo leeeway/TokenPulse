@@ -78,6 +78,10 @@ internal static class Ui
         window.Style = (Style)Application.Current.FindResource(typeof(Window));
         window.WindowStyle = WindowStyle.None;
         window.ResizeMode = ResizeMode.CanResize;
+        window.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) { window.Close(); e.Handled = true; }
+        };
         WindowChrome.SetWindowChrome(window, new WindowChrome { CaptionHeight = 0, ResizeBorderThickness = new Thickness(5),
             GlassFrameThickness = new Thickness(0), CornerRadius = new CornerRadius(14), UseAeroCaptionButtons = false });
         window.SourceInitialized += (_, _) =>

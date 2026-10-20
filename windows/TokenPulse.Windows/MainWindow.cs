@@ -14,7 +14,7 @@ internal sealed class MainWindow : Window
     private readonly TextBlock saved = Ui.Text("缓存节省", 10, Ui.Muted);
     private readonly TextBlock upstream = Ui.Text("↑ —", 12, Ui.Blue, FontWeights.SemiBold);
     private readonly TextBlock downstream = Ui.Text("↓ —", 12, Ui.Accent, FontWeights.SemiBold);
-    private readonly TextBlock flowDetail = Ui.Text("只读采集本地日志", 10.5, Ui.Muted);
+    private readonly TextBlock flowDetail = Ui.Text("只读采集本地日志", 10.5, Brushes.White);
     private readonly Grid flow = Ui.Columns(new(1, GridUnitType.Star), new(0), new(0));
     private readonly TextBlock alertText = Ui.Text("", 10.5, Ui.Amber);
     private readonly TextBlock errorText = Ui.Text("", 11, Ui.Brush("#B44C48"));
@@ -28,6 +28,7 @@ internal sealed class MainWindow : Window
     private readonly TextBlock updated = Ui.Text("正在连接本地日志", 10, Ui.Muted);
     private readonly TextBlock sourceChevron = Ui.Glyph("\uE70D", 9);
     private readonly TextBlock connection = Ui.Text("本地只读", 10, Ui.Muted);
+    private readonly System.Windows.Shapes.Ellipse connectionIndicator = new() { Width = 5, Height = 5, Fill = Ui.Green, Margin = new Thickness(0, 0, 6, 0) };
     private readonly StackPanel localModelRows = new();
     private readonly Button refreshButton;
     private bool sourcesExpanded;
@@ -57,7 +58,7 @@ internal sealed class MainWindow : Window
         var footer = Ui.Columns(GridLength.Auto, new(1, GridUnitType.Star), GridLength.Auto);
         footer.Margin = new Thickness(1, 0, 1, 0); footer.Height = 39;
         var privacy = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        privacy.Children.Add(new System.Windows.Shapes.Ellipse { Width = 5, Height = 5, Fill = Ui.Green, Margin = new Thickness(0, 0, 6, 0) });
+        privacy.Children.Add(connectionIndicator);
         privacy.Children.Add(connection); Ui.Put(footer, privacy, 0);
         updated.HorizontalAlignment = HorizontalAlignment.Right; Ui.Put(footer, updated, 2);
         footer.ToolTip = "只读本地日志 · 费用为兼容估算 · 关闭面板后继续驻留托盘";
@@ -123,6 +124,7 @@ internal sealed class MainWindow : Window
         flowDetail.ToolTip = "上行包含输入、缓存写入与读取；推理 Token 已含于下行，不重复计数。";
         var widths = t.Total == 0 ? new double[] { 1, 0, 0 } : [(double)(t.Input + t.CacheWrite), t.CacheRead, t.Output];
         for (var i = 0; i < 3; i++) flow.ColumnDefinitions[i].Width = new GridLength(widths[i], GridUnitType.Star);
+        ((Border)flow.Children[0]).Background = t.Total == 0 ? Ui.Brush("#E9ECF4") : Ui.Blue;
         alertBox.Visibility = snapshot.IsHighBurnRate ? Visibility.Visible : Visibility.Collapsed;
         alertText.Text = $"近 5 分钟 {Formatting.Tokens(snapshot.Recent.Total)} Token · {Formatting.Usd(snapshot.Recent.Cost)}";
         providerCount.Text = $"{snapshot.Providers.Count} 个来源"; providerRows.Children.Clear();
@@ -143,6 +145,7 @@ internal sealed class MainWindow : Window
             var path = Ui.Text(source.Path, 10, Ui.Muted); path.Margin = new Thickness(0, 3, 0, 0); row.Children.Add(path); sourceRows.Children.Add(row);
         }
         sourceRows.Children.Add(Ui.Text(ollama.Status, 10.5, Ui.Muted)); updated.Text = $"更新于 {snapshot.GeneratedAt.LocalDateTime:HH:mm:ss}"; connection.Text = errors > 0 ? "部分数据源需检查" : "本地只读";
+        connectionIndicator.Fill = errors > 0 ? Ui.Amber : Ui.Green;
     }
     private static Border ProviderCard(ProviderSummary provider)
     {

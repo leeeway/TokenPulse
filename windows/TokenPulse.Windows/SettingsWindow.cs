@@ -15,8 +15,8 @@ internal sealed class SettingsWindow : Window
         error.Margin = new Thickness(0, 8, 0, 10); bottom.Children.Add(error);
         var buttons = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto, new(8), GridLength.Auto);
         Ui.Put(buttons, Ui.Text("设置仅保存在当前设备", 10, Ui.Muted), 0);
-        Ui.Put(buttons, Ui.Button("取消", Close), 1);
-        var saveButton = Ui.Button("保存设置", () => { }, true); Ui.Put(buttons, saveButton, 3);
+        var cancel = Ui.Button("取消", Close); cancel.IsCancel = true; Ui.Put(buttons, cancel, 1);
+        var saveButton = Ui.Button("保存设置", () => { }, true); saveButton.IsDefault = true; Ui.Put(buttons, saveButton, 3);
         bottom.Children.Add(buttons); bottom.Margin = new Thickness(0, 12, 0, 0);
         DockPanel.SetDock(bottom, Dock.Bottom); root.Children.Add(bottom);
         var body = new StackPanel { Margin = new Thickness(0, 0, 4, 0) };
@@ -25,8 +25,9 @@ internal sealed class SettingsWindow : Window
         var paths = new StackPanel();
         TextBox AddPath(string title, string description, string path, bool file = false)
         {
-            paths.Children.Add(Ui.Text(title, 11.5, Ui.Ink, FontWeights.SemiBold));
-            var hint = Ui.Text(description, 10, Ui.Muted); hint.Margin = new Thickness(0, 3, 0, 7); paths.Children.Add(hint);
+            var label = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto);
+            Ui.Put(label, Ui.Text(title, 11.5, Ui.Ink, FontWeights.SemiBold), 0);
+            Ui.Put(label, Ui.Text(description, 10, Ui.Muted), 1); paths.Children.Add(label); Ui.Gap(paths, 7);
             var row = Ui.Columns(new(1, GridUnitType.Star), new(7), GridLength.Auto);
             var box = new TextBox { Text = path, ToolTip = path, MinWidth = 180 };
             System.Windows.Automation.AutomationProperties.SetName(box, title);
