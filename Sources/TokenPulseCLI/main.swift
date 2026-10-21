@@ -108,9 +108,9 @@ for p in snapshot.providers {
     )
     print(row)
     if let rl = p.rateLimit {
-        let secInfo = rl.secondaryUsedPercent != nil ? String(format: " | 7d Quota: %.0f%%", rl.secondaryUsedPercent!) : ""
-        print("    \(dim)↳ Rate Limit (5h Window): \(String(format: "%.0f%%", rl.primaryUsedPercent))\(secInfo) · Plan: \(rl.planType ?? "pro")\(reset)")
+        print("    \(dim)↳ \(TokenFormatters.quotaSummary(rl))\(reset)")
     }
 }
 print("  ──────────────────────────────────────────────────────────────────────────")
+print("  \(dim)费用依据：\(PricingEngine.estimateNotice)\(reset)")
 print("  \(dim)提示: 使用 `tokenpulse --today` / `--7d` / `--30d` / `--all` 切换窗口，或 `--json` 导出 JSON\(reset)")

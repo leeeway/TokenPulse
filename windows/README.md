@@ -111,3 +111,7 @@ dotnet run --project TokenPulse.Windows/TokenPulse.Windows.csproj
 - 启停 Ollama，确认旧运行模型被清空；系统代理不影响 loopback 查询。
 
 CI 冒烟测试不替代上述桌面交互验收。未经真实 Windows 验证的项目应保留为待验收，不能仅凭交叉编译视为通过。
+
+## 0.4.3 刷新与费用依据
+
+日志扫描和 Ollama 查询同时进行，扫描完成即展示统计，模型信息随后更新；设置变更及退出时仍丢弃过期结果。费用悬停展示内置兼容估算版本 `compat-v1`、每百万 Token 费率，以及未知模型回退提示。现有估算金额保持兼容，不代表实时官方报价或实际账单。

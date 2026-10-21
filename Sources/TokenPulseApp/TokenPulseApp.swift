@@ -161,9 +161,10 @@ struct DashboardPopoverView: View {
             metricTile(
                 title: "等效 API 价值",
                 value: TokenFormatters.usd(s.totalCostUSD),
-                subtitle: "白嫖订阅回本估算",
+                subtitle: "内置兼容估算 · 非账单",
                 color: .orange
             )
+            .help(PricingEngine.estimateNotice)
         }
     }
 
@@ -377,6 +378,7 @@ struct ProviderRowView: View {
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.orange)
                     .frame(width: 56, alignment: .trailing)
+                    .help(summary.topModels.map { PricingEngine.basis(provider: summary.provider, model: $0) }.joined(separator: "\n\n"))
             }
 
             HStack(spacing: 10) {

@@ -80,12 +80,24 @@ internal sealed class App : Application
         var currentSettings = settings;
         try
         {
-            var result = await Task.Run(() => scanner.Scan(currentSettings, stopping.Token), stopping.Token);
-            var models = currentSettings.EnableOllama ? await ollama.ReadAsync(stopping.Token) : new OllamaResult([], "Ollama 查询已关闭");
-            if (currentSettings != settings || stopping.IsCancellationRequested) return;
-            scan = result; scanSettings = currentSettings; localModels = models;
-            dashboard?.ShowError(settingsWarning);
-            await RenderAsync();
+            await RefreshPipeline.RunAsync(
+                () => Task.Run(() => scanner.Scan(currentSettings, stopping.Token), stopping.Token),
+                () => currentSettings.EnableOllama ? ollama.ReadAsync(stopping.Token)
+                    : Task.FromResult(new OllamaResult([], "Ollama 查询已关闭")),
+                async result =>
+                {
+                    if (currentSettings != settings || stopping.IsCancellationRequested) return;
+                    scan = result; scanSettings = currentSettings;
+                    localModels = new([], currentSettings.EnableOllama ? "正在查询 Ollama…" : "Ollama 查询已关闭");
+                    dashboard?.ShowError(settingsWarning);
+                    await RenderAsync();
+                },
+                async models =>
+                {
+                    if (currentSettings != settings || stopping.IsCancellationRequested) return;
+                    localModels = models;
+                    await RenderAsync();
+                });
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }
         catch (Exception ex) { dashboard?.ShowError("刷新失败，将在下一轮重试：" + ex.Message); }

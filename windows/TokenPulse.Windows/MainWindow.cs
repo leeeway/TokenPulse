@@ -161,6 +161,7 @@ internal sealed class MainWindow : Window
         exportButton.IsEnabled = !exporting;
         var t = snapshot.Totals;
         tokens.Text = Formatting.Tokens(t.Total); cache.Text = t.CacheHitRatio.ToString("P1"); cost.Text = Formatting.Usd(t.Cost);
+        cost.ToolTip = Pricing.EstimateNotice;
         sessions.Text = $"{t.Sessions} 会话 · {t.Events} 步";
         var hasUnknownUsage = snapshot.UnknownTimestampEvents > 0;
         timestampNotice.Visibility = hasUnknownUsage ? Visibility.Visible : Visibility.Collapsed;
@@ -245,7 +246,7 @@ internal sealed class MainWindow : Window
         var model = Ui.Text(string.Join(" · ", provider.TopModels), 10, Ui.Muted); model.Margin = new Thickness(0, 3, 5, 0); model.TextWrapping = TextWrapping.NoWrap; model.TextTrimming = TextTrimming.CharacterEllipsis; model.ToolTip = model.Text;
         identity.Children.Add(model); Ui.Put(header, identity, 1);
         var values = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right }; values.Children.Add(Ui.Text(Formatting.Tokens(provider.Totals.Total), 16, Ui.Ink, FontWeights.SemiBold));
-        var price = Ui.Text(Formatting.Usd(provider.Totals.Cost), 10, Ui.Muted); price.HorizontalAlignment = HorizontalAlignment.Right; price.Margin = new Thickness(0, 2, 0, 0); values.Children.Add(price); Ui.Put(header, values, 2); panel.Children.Add(header);
+        var price = Ui.Text(Formatting.Usd(provider.Totals.Cost), 10, Ui.Muted); price.ToolTip = string.Join("\n\n", provider.TopModels.Select(m => Pricing.Basis(provider.Provider, m))); price.HorizontalAlignment = HorizontalAlignment.Right; price.Margin = new Thickness(0, 2, 0, 0); values.Children.Add(price); Ui.Put(header, values, 2); panel.Children.Add(header);
         header.ToolTip = provider.LastActivityAt is { } active ? $"最近活跃 {active.LocalDateTime:yyyy-MM-dd HH:mm:ss}" : "日志没有提供可确认的用量时间";
         Ui.Gap(panel, 8); panel.Children.Add(Ui.Text($"↑ {Formatting.Tokens(provider.Totals.Upstream)}     ↓ {Formatting.Tokens(provider.Totals.Output)}     缓存 {provider.Totals.CacheHitRatio:P1}", 10.5, Ui.Muted));
         if (provider.RateLimit is { } quota)

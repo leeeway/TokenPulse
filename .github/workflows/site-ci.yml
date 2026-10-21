@@ -1,0 +1,22 @@
+name: Website integration checks
+on:
+  push:
+    branches: [main]
+    paths: ['integrations/lwblog/**', '.github/workflows/site-ci.yml']
+  pull_request:
+    paths: ['integrations/lwblog/**', '.github/workflows/site-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s integrations/lwblog/tests -v
+      - run: bash -n integrations/lwblog/deploy-static.sh integrations/lwblog/rollback-static.sh
+      - run: python3 integrations/lwblog/check-versions.py --online

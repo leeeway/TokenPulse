@@ -30,6 +30,27 @@ public enum PricingEngine {
         public let savedByCacheUSD: Double
     }
 
+    public static let catalogVersion = "compat-v1"
+    public static let estimateNotice = "内置兼容估算 compat-v1，非实时官方报价或实际账单。自定义记录可自带金额。"
+
+    /// Exact catalog keys describe the legacy table, not verified current market prices.
+    private static let catalogModels: Set<String> = [
+        "claude-opus", "claude-haiku", "claude-sonnet", "o3", "gpt-5",
+        "gpt-5-codex", "gemini-flash", "gemini-pro"
+    ]
+
+    public static func basis(provider: AIProvider, model: String) -> String {
+        if provider == .custom { return "自定义记录金额优先；未提供时使用兼容估算 · " + catalogVersion }
+        if provider == .ollama { return "本地模型 API 费用按 0 估算，不包含硬件或电费" }
+        let lower = model.lowercased()
+        let matchingProvider = (provider == .claudeCode && lower.hasPrefix("claude-"))
+            || (provider == .codex && (lower.hasPrefix("gpt-") || lower == "o3"))
+            || (provider == .antigravity && lower.hasPrefix("gemini-"))
+        let match = matchingProvider && catalogModels.contains(lower) ? "内置模型条目" : "未精确匹配模型，使用兼容回退"
+        let r = rate(for: provider, model: model)
+        return "\(model)：\(match) · \(catalogVersion)\n每百万 Token（USD）：输入 \(r.inputPerMillion)，缓存写入 \(r.cacheWritePerMillion)，缓存读取 \(r.cacheReadPerMillion)，输出 \(r.outputPerMillion)\n非实时官方报价或实际账单"
+    }
+
     public static func rate(for provider: AIProvider, model: String) -> ModelRate {
         let lower = model.lowercased()
 
@@ -93,6 +114,19 @@ public enum PricingEngine {
 
 /// Human-friendly formatters for token counts, costs, and percentages.
 public enum TokenFormatters {
+    public static func quotaSummary(_ quota: RateLimitSnapshot, now: Date = Date(), timeZone: TimeZone = .current) -> String {
+        func window(_ minutes: Int?, _ used: Double, _ reset: Date?) -> String {
+            "\(quotaWindow(minutes)) 配额 \(String(format: "%.0f%%", used)) · \(quotaResetCountdown(reset, now: now, timeZone: timeZone))"
+        }
+        var parts = [window(quota.primaryWindowMinutes, quota.primaryUsedPercent, quota.primaryResetsAt)]
+        if let used = quota.secondaryUsedPercent {
+            parts.append(window(quota.secondaryWindowMinutes, used, quota.secondaryResetsAt))
+        }
+        let plan = quota.planType?.trimmingCharacters(in: .whitespacesAndNewlines)
+        parts.append("套餐：" + ((plan?.isEmpty == false) ? plan! : "未知"))
+        return parts.joined(separator: " | ")
+    }
+
     public static func quotaWindow(_ minutes: Int?) -> String {
         guard let minutes, minutes > 0 else { return "窗口" }
         if minutes % 1440 == 0 { return "\(minutes / 1440)d" }

@@ -468,6 +468,38 @@ await Test("Latest activity follows the selected period and deterministic ties",
     Equal("historic", all.Models.Last().Model); Equal(now.AddDays(-1), all.Models.Last().LastActivityAt!.Value);
 }));
 
+await Test("Log totals publish before a delayed model query completes", async () =>
+{
+    var models = new TaskCompletionSource<OllamaResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var logsPublished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var modelPublished = false;
+    var running = RefreshPipeline.RunAsync(() => Task.FromResult(123), () => models.Task,
+        logs => { Equal(123, logs); logsPublished.SetResult(); return Task.CompletedTask; },
+        value => { Equal("offline", value.Status); modelPublished = true; return Task.CompletedTask; });
+    await logsPublished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    Check(!running.IsCompleted && !modelPublished, "Logs must render while models are pending");
+    models.SetResult(new([], "offline"));
+    await running;
+    Check(modelPublished, "The completed model query must publish separately");
+});
+await Test("Model failure cannot suppress already published logs", async () =>
+{
+    var published = false;
+    try
+    {
+        await RefreshPipeline.RunAsync(() => Task.FromResult(1), () => Task.FromException<int>(new IOException("offline")),
+            logs => { published = true; return Task.CompletedTask; }, value => Task.CompletedTask);
+        throw new Exception("Expected model failure");
+    }
+    catch (IOException) { Check(published, "Log totals were lost"); }
+});
+await Test("Pricing describes unknown models without changing compatibility totals", () => Sync(() =>
+{
+    Check(Pricing.Basis(Providers.Codex, "gpt-6.1-sol").Contains("未精确匹配"), "Unknown model must be explicit");
+    Check(Pricing.Basis(Providers.Codex, "gpt-5").Contains("内置模型条目"), "Exact catalog key missing");
+    Near(12.5, Pricing.Estimate(Providers.Codex, "gpt-6.1-sol", 1_000_000, 1_000_000, 1_000_000, 1_000_000).Cost);
+}));
+
 Console.WriteLine($"{passed} passed, {failures} failed.");
 return failures == 0 ? 0 : 1;
 

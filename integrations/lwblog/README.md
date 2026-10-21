@@ -26,13 +26,17 @@ npm run build
 
 ## 部署要求
 
-先备份线上站点并在独立 release 目录准备文件，检查后再切换或安装页面。保留其他现有目录与资源，不能删除主站以外的服务。部署前后检查 Nginx 和代理服务状态/PID。
+先备份线上站点并在独立 release 目录准备完整文件，通过单个符号链接的原子替换统一切换全部页面。保留其他现有目录与资源，不能删除主站以外的服务。部署前后检查 Nginx 和代理服务状态/PID。
 
 CardPulse 的 HTML、模块 worker 与 WASM 需要正确 MIME 类型，`.mjs` 使用 JavaScript MIME、`.wasm` 使用 `application/wasm`。仅 CardPulse 路径的 CSP 允许 `script-src 'self' 'wasm-unsafe-eval'`、`worker-src 'self'`，并在 `connect-src` 中允许 `https://api.frankfurter.dev` 以支持用户主动更新公开汇率。保留其余现有安全头及主站 CSP；不要加入 `unsafe-eval` 或第三方脚本。
 
 `nginx-cardpulse.conf.example` 提供该 HTTPS 站点的路径配置，`nginx-cardpulse-security.conf` 提供应用专属安全头。应先检查现有 location 和安全头，备份配置后再合并；`nginx -t` 成功后仅 reload Nginx。禁止修改或重启代理服务。
 
-`deploy-static.sh` 适用于已核对的现有 lwblog.cn 主机。上传目录包含 `site.tar.gz`（Astro dist 内容）、上述两个 Nginx 文件及记录这些文件摘要的 `SHA256SUMS.txt`，再在服务器执行 `bash deploy-static.sh /path/to/upload`。脚本校验摘要、保留站点/配置备份与独立 release，失败恢复所改路径；不会清理旧的不可变资源。线上浏览器验收在脚本之后执行。
+`deploy-static.sh` 适用于已核对的现有 lwblog.cn 主机。上传目录包含 `site.tar.gz`（Astro dist 内容）、两个 Nginx 文件、`release-pointer.py`、`rollback-static.sh`，并用 `SHA256SUMS.txt` 记录这些文件摘要。执行 `bash deploy-static.sh /path/to/upload`。首次部署将网站 root 迁移到 `/var/www/lwblog-current` 指针；后续统一切换指针，保留旧版本和旧的哈希资源。主站 CSP 和代理服务保持原状，失败自动回滚。
+
+独立回滚：`bash /path/to/backup/rollback-static.sh /path/to/backup`。备份路径由部署结果给出，位于 `/var/backups/lwblog.cn-before-projects-*`。回滚只恢复网站版本指针和该站配置，不需要重新构建。上线后仍需浏览器验收。
+
+版本校验：`python3 integrations/lwblog/check-versions.py --online`。检查显示版本与下载标签一致，Release 附件已上传且非空，附件列入 SHA-256 清单，GitHub 提供 digest 时核对二者一致。Website integration checks 工作流在本目录变化时执行测试及在线校验；不会自动升级下载链接或自动部署。
 
 网页版保险库以浏览器和站点 origin 为边界，与 GitHub Pages、本地开发地址或桌面版数据不互通。换地址前应备份；不自动读取或迁移任何用户账单。
 
