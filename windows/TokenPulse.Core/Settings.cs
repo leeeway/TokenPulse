@@ -11,17 +11,37 @@ public sealed record Settings
     public string CustomEventsFile { get; init; } = Path.Combine(Home, ".tokenpulse", "custom_events.jsonl");
     public bool StartWithWindows { get; init; }
     public bool EnableOllama { get; init; } = true;
+    public bool EnableClaude { get; init; } = true;
+    public bool EnableCodex { get; init; } = true;
+    public bool EnableAntigravity { get; init; } = true;
+    public bool EnableCustom { get; init; } = true;
+    public long BurnRateTokens { get; init; } = 250_000;
+    public double BurnRateUSD { get; init; } = 1.50;
+
+    public IEnumerable<LogSource> LogSources() =>
+    [
+        new(Providers.Claude, ClaudeDirectory ?? "", false, EnableClaude),
+        new(Providers.Codex, CodexDirectory ?? "", false, EnableCodex),
+        new(Providers.Antigravity, AntigravityDirectory ?? "", false, EnableAntigravity),
+        new(Providers.Custom, CustomEventsFile ?? "", true, EnableCustom)
+    ];
+
+    public BurnRateThresholds AlertThresholds() => new(BurnRateTokens, BurnRateUSD);
 
     public void Validate()
     {
-        foreach (var path in new[] { ClaudeDirectory, CodexDirectory, AntigravityDirectory, CustomEventsFile })
+        AlertThresholds().Validate();
+        foreach (var source in LogSources().Where(s => s.Enabled))
         {
+            var path = source.Path;
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
-                throw new ArgumentException("请填写完整的绝对路径；目录可以暂时不存在。");
+                throw new ArgumentException($"{Providers.Name(source.Provider)}：请填写完整的绝对路径；目录可以暂时不存在。");
             _ = Path.GetFullPath(path);
         }
     }
 }
+
+public sealed record LogSource(string Provider, string Path, bool SingleFile, bool Enabled);
 
 public sealed class SettingsStore(string? filePath = null)
 {

@@ -32,19 +32,23 @@ internal sealed class MainWindow : Window
     private readonly StackPanel localModelRows = new();
     private readonly Button refreshButton;
     private readonly Button exportButton;
+    private readonly Action openSettings;
     private readonly HashSet<string> expandedProviders = [];
     private DashboardSnapshot? renderedSnapshot;
     private TimeWindow renderedWindow;
     private bool exporting;
+    private bool dataPending;
     private IReadOnlyList<ProviderSummary>? renderedProviders;
     private DateTimeOffset providersRenderedAt;
     private bool sourcesExpanded;
+    private bool renderedAllDisabled;
     public TimeWindow SelectedWindow { get; private set; } = TimeWindow.Today;
     internal bool HasRendered => renderedSnapshot is not null;
     public bool AllowClose { get; set; }
 
     public MainWindow(Action refresh, Action settings, Action changeWindow)
     {
+        openSettings = settings;
         Title = $"TokenPulse · {Ui.Version}"; Width = 468; Height = 740; MinWidth = 420; MinHeight = 500;
         ShowInTaskbar = false; Ui.ConfigureWindow(this);
         using (var icon = TrayIcon.CreateIcon(false)) Icon = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
@@ -91,7 +95,7 @@ internal sealed class MainWindow : Window
         Ui.Put(alertContent, new Border { Child = Ui.Glyph("\uE945", 15, Ui.Amber), Width = 30, VerticalAlignment = VerticalAlignment.Center }, 0);
         var alertLabels = new StackPanel(); alertLabels.Children.Add(Ui.Text("消耗速度较高", 11, Ui.Amber, FontWeights.SemiBold));
         alertText.Margin = new Thickness(0, 3, 0, 0); alertLabels.Children.Add(alertText); Ui.Put(alertContent, alertLabels, 1);
-        alertBox = new Border { Child = alertContent, Background = Ui.Brush("#FFF6E8"), BorderBrush = Ui.Brush("#F4E6CD"), BorderThickness = new Thickness(1), Padding = new Thickness(9), CornerRadius = new CornerRadius(9), Margin = new Thickness(0, 0, 0, 12), Visibility = Visibility.Collapsed };
+        alertBox = new Border { Name = "HighBurnAlert", Child = alertContent, Background = Ui.Brush("#FFF6E8"), BorderBrush = Ui.Brush("#F4E6CD"), BorderThickness = new Thickness(1), Padding = new Thickness(9), CornerRadius = new CornerRadius(9), Margin = new Thickness(0, 0, 0, 12), Visibility = Visibility.Collapsed };
         body.Children.Add(alertBox);
         var metrics = Ui.Columns(new(1, GridUnitType.Star), new(8), new(1, GridUnitType.Star), new(8), new(1, GridUnitType.Star));
         Border Metric(string label, TextBlock value, TextBlock caption)
@@ -140,8 +144,15 @@ internal sealed class MainWindow : Window
         sourcesExpanded = expanded; sourceRows.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed; sourceChevron.Text = expanded ? "\uE70E" : "\uE70D";
     }
     public void ShowError(string? message) { errorText.Text = message ?? ""; errorBox.Visibility = string.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible; }
+    public void SetDataPending()
+    {
+        dataPending = true;
+        exportButton.IsEnabled = false;
+        updated.Text = "正在重新读取…";
+    }
     public void Render(DashboardSnapshot snapshot, ScanResult scan, OllamaResult ollama)
     {
+        dataPending = false;
         renderedSnapshot = snapshot; renderedWindow = SelectedWindow;
         exportButton.IsEnabled = !exporting;
         var t = snapshot.Totals;
@@ -156,23 +167,34 @@ internal sealed class MainWindow : Window
         ((Border)flow.Children[0]).Background = t.Total == 0 ? Ui.Brush("#E9ECF4") : Ui.Blue;
         alertBox.Visibility = snapshot.IsHighBurnRate ? Visibility.Visible : Visibility.Collapsed;
         alertText.Text = $"近 5 分钟 {Formatting.Tokens(snapshot.Recent.Total)} Token · {Formatting.Usd(snapshot.Recent.Cost)}";
+        var thresholds = snapshot.AlertThresholds;
+        alertBox.ToolTip = "高消耗阈值：Token " + (thresholds.Tokens == 0 ? "已关闭" : thresholds.Tokens.ToString("N0"))
+            + " · 费用 " + (thresholds.USD == 0 ? "已关闭" : Formatting.Usd(thresholds.USD)) + "；可在运行偏好中修改。";
         providerCount.Text = $"{snapshot.Providers.Count} 个来源";
+        var allDisabled = scan.Statuses.Count > 0 && scan.Statuses.All(s => s.State == SourceState.Disabled);
         // Keep interactive rows (and keyboard focus) intact on unchanged timer ticks.
-        if (!SameProviders(snapshot.Providers, snapshot.GeneratedAt))
+        if (!SameProviders(snapshot.Providers, snapshot.GeneratedAt) || allDisabled != renderedAllDisabled)
         {
             providerRows.Children.Clear();
             if (snapshot.Providers.Count == 0)
             {
-                var empty = new StackPanel { Margin = new Thickness(4, 6, 4, 6) }; empty.Children.Add(Ui.Text("等待第一条用量记录", 13, Ui.Ink, FontWeights.SemiBold)); Ui.Gap(empty, 6);
-                empty.Children.Add(Ui.Text("开始使用 AI 工具，或在设置中选择日志目录。", 11, Ui.Muted)); providerRows.Children.Add(Ui.Card(empty));
+                var empty = new StackPanel { Margin = new Thickness(4, 6, 4, 6) };
+                empty.Children.Add(Ui.Text(allDisabled ? "日志扫描已关闭" : "等待第一条用量记录", 13, Ui.Ink, FontWeights.SemiBold)); Ui.Gap(empty, 6);
+                empty.Children.Add(Ui.Text(allDisabled ? "在设置中开启需要的数据源，即可恢复统计。" : "开始使用 AI 工具，或在设置中选择日志目录。", 11, Ui.Muted));
+                var configure = Ui.Button("设置数据源", openSettings);
+                configure.HorizontalAlignment = HorizontalAlignment.Left; configure.Margin = new Thickness(0, 10, 0, 0);
+                empty.Children.Add(configure); providerRows.Children.Add(Ui.Card(empty));
             }
             foreach (var provider in snapshot.Providers) providerRows.Children.Add(ProviderCard(provider, snapshot.GeneratedAt));
-            renderedProviders = snapshot.Providers; providersRenderedAt = snapshot.GeneratedAt;
+            renderedProviders = snapshot.Providers; providersRenderedAt = snapshot.GeneratedAt; renderedAllDisabled = allDisabled;
         }
         RenderTrend(snapshot.Trend); localModelRows.Children.Clear(); localModelCard.Visibility = ollama.Models.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         foreach (var model in ollama.Models) localModelRows.Children.Add(Ui.Text($"{model.Name}  ·  显存 {model.VramBytes / 1073741824.0:F1} GiB", 11, Ui.Muted));
         var ready = scan.Statuses.Count(s => s.State == SourceState.Ready && s.Message != "未发现日志"); var errors = scan.Statuses.Count(s => s.State == SourceState.Error);
-        sourceTitle.Text = $"数据源  ·  {ready}/{scan.Statuses.Count} 已连接" + (errors > 0 ? $"  ·  {errors} 项需检查" : ""); sourceTitle.Foreground = errors > 0 ? Ui.Amber : Ui.Muted;
+        var disabled = scan.Statuses.Count(s => s.State == SourceState.Disabled);
+        sourceTitle.Text = allDisabled ? $"数据源  ·  {disabled} 已关闭" : $"数据源  ·  {ready}/{scan.Statuses.Count - disabled} 已连接" +
+            (disabled > 0 ? $"  ·  {disabled} 已关闭" : "") + (errors > 0 ? $"  ·  {errors} 项需检查" : "");
+        sourceTitle.Foreground = errors > 0 ? Ui.Amber : Ui.Muted;
         sourceRows.Children.Clear();
         foreach (var source in scan.Statuses)
         {
@@ -180,8 +202,8 @@ internal sealed class MainWindow : Window
             var path = Ui.Text(source.Path, 10, Ui.Muted); path.Margin = new Thickness(0, 3, 0, 0); row.Children.Add(path); sourceRows.Children.Add(row);
         }
         sourceRows.Children.Add(Ui.Text(ollama.Status, 10.5, Ui.Muted)); updated.Text = $"更新于 {snapshot.GeneratedAt.LocalDateTime:HH:mm:ss}";
-        connection.Text = (errors > 0 ? "部分数据源需检查" : "本地只读") + $" · {Ui.Version}";
-        connectionIndicator.Fill = errors > 0 ? Ui.Amber : Ui.Green;
+        connection.Text = (errors > 0 ? "部分数据源需检查" : allDisabled ? "日志源已关闭" : "本地只读") + $" · {Ui.Version}";
+        connectionIndicator.Fill = errors > 0 ? Ui.Amber : allDisabled ? Ui.Muted : Ui.Green;
     }
     private bool SameProviders(IReadOnlyList<ProviderSummary> providers, DateTimeOffset now)
     {
@@ -262,7 +284,7 @@ internal sealed class MainWindow : Window
     }
     private async Task ExportAsync()
     {
-        if (renderedSnapshot is null || renderedWindow != SelectedWindow || exporting) return;
+        if (renderedSnapshot is null || renderedWindow != SelectedWindow || exporting || dataPending) return;
         var snapshot = renderedSnapshot;
         var period = renderedWindow;
         var dialog = new Microsoft.Win32.SaveFileDialog
@@ -289,7 +311,7 @@ internal sealed class MainWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         { MessageBox.Show(this, "导出失败：" + ex.Message, "TokenPulse", MessageBoxButton.OK, MessageBoxImage.Warning); }
-        finally { exporting = false; exportButton.IsEnabled = renderedWindow == SelectedWindow; }
+        finally { exporting = false; exportButton.IsEnabled = !dataPending && renderedWindow == SelectedWindow; }
     }
     private void RenderTrend(IReadOnlyList<DailyPoint> points)
     {

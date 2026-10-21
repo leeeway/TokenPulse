@@ -288,6 +288,83 @@ await Test("CSV uses invariant numbers, escaped model names and literal spreadsh
     finally { System.Globalization.CultureInfo.CurrentCulture = oldCulture; }
 }));
 
+await Test("All source enable combinations select events and quotas independently", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    Directory.CreateDirectory(folder.Settings.ClaudeDirectory);
+    Directory.CreateDirectory(folder.Settings.CodexDirectory);
+    var logs = Path.Combine(folder.Settings.AntigravityDirectory, "session", ".system_generated", "logs");
+    Directory.CreateDirectory(logs);
+    File.WriteAllText(Path.Combine(folder.Settings.ClaudeDirectory, "test.jsonl"), Fixture("claude"));
+    File.WriteAllText(Path.Combine(folder.Settings.CodexDirectory, "test.jsonl"), Fixture("codex"));
+    File.WriteAllText(Path.Combine(logs, "transcript.jsonl"), Fixture("antigravity"));
+    File.WriteAllText(folder.Settings.CustomEventsFile, Fixture("custom"));
+    var scanner = new LogScanner();
+    for (var mask = 0; mask < 16; mask++)
+    {
+        var settings = folder.Settings with { EnableClaude = (mask & 1) != 0, EnableCodex = (mask & 2) != 0,
+            EnableAntigravity = (mask & 4) != 0, EnableCustom = (mask & 8) != 0 };
+        var scan = scanner.Scan(settings);
+        Equal((settings.EnableClaude ? 2 : 0) + (settings.EnableCodex ? 2 : 0) + (settings.EnableAntigravity ? 1 : 0) + (settings.EnableCustom ? 1 : 0), scan.Events.Count);
+        Equal(settings.EnableCodex ? 1 : 0, scan.RateLimits.Count);
+        foreach (var source in settings.LogSources())
+            Equal(source.Enabled ? SourceState.Ready : SourceState.Disabled, scan.Statuses.Single(s => s.Provider == source.Provider).State);
+    }
+}));
+await Test("Disabled sources skip invalid paths and evict cached content before re-enabling", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    Directory.CreateDirectory(folder.Settings.ClaudeDirectory);
+    var path = Path.Combine(folder.Settings.ClaudeDirectory, "test.jsonl");
+    var first = """{"message":{"usage":{"input_tokens":1}}}""";
+    File.WriteAllText(path, first);
+    var timestamp = File.GetLastWriteTimeUtc(path);
+    var scanner = new LogScanner();
+    Equal(1L, scanner.Scan(folder.Settings).Events.Single().InputTokens);
+    var off = folder.Settings with { EnableClaude = false, EnableCodex = false, EnableAntigravity = false, EnableCustom = false,
+        ClaudeDirectory = "\0", CodexDirectory = "", AntigravityDirectory = "relative", CustomEventsFile = null! };
+    off.Validate();
+    var scan = scanner.Scan(off);
+    Equal(0, scan.Events.Count); Check(scan.Statuses.All(s => s.State == SourceState.Disabled), "disabled path was accessed");
+    File.WriteAllText(path, first.Replace(":1", ":9")); File.SetLastWriteTimeUtc(path, timestamp);
+    Equal(9L, scanner.Scan(folder.Settings).Events.Single().InputTokens);
+    try { (off with { EnableCodex = true }).Validate(); throw new Exception("enabled empty path accepted"); }
+    catch (ArgumentException) { }
+}));
+await Test("Burn thresholds honor independent disabling, exact boundaries and finite validation", () => Sync(() =>
+{
+    UsageTotals Totals(long tokens, double usd) => new(tokens, 0, 0, 0, 0, usd, 0, 1, 1);
+    var defaults = new BurnRateThresholds();
+    Check(!defaults.IsExceeded(Totals(249999, 1.49)), "warned below both thresholds");
+    Check(defaults.IsExceeded(Totals(250000, 0)), "token boundary missed");
+    Check(defaults.IsExceeded(Totals(0, 1.5)), "cost boundary missed");
+    Check(!new BurnRateThresholds(0, 0).IsExceeded(Totals(long.MaxValue, double.MaxValue)), "zero did not disable alerts");
+    Check(!new BurnRateThresholds(0, 2).IsExceeded(Totals(500000, 1.99)), "disabled token threshold still active");
+    Check(!new BurnRateThresholds(500000, 0).IsExceeded(Totals(499999, 100)), "disabled cost threshold still active");
+    foreach (var value in new[] { new BurnRateThresholds(-1, 0), new(0, -1), new(0, double.NaN), new(0, double.PositiveInfinity) })
+    {
+        try { value.Validate(); throw new Exception("invalid threshold accepted"); }
+        catch (ArgumentException) { }
+    }
+    var snapshot = Aggregation.Build(new([UsageEvent.Create("a", Providers.Codex, "x", now, "a", 250000, 0, 0, 0)], [], []), TimeWindow.All, now);
+    Check(snapshot.IsHighBurnRate && !(snapshot with { AlertThresholds = new(0, 0) }).IsHighBurnRate, "snapshot ignored configured thresholds");
+}));
+await Test("Legacy settings retain defaults and new preferences persist together", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    var store = new SettingsStore(Path.Combine(folder.Path, "settings.json"));
+    var legacy = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(folder.Settings))!.AsObject();
+    foreach (var key in new[] { "EnableClaude", "EnableCodex", "EnableAntigravity", "EnableCustom", "BurnRateTokens", "BurnRateUSD" }) legacy.Remove(key);
+    File.WriteAllText(store.FilePath, legacy.ToJsonString());
+    var (loaded, warning) = store.Load();
+    Check(warning is null && loaded.LogSources().All(s => s.Enabled), "legacy source defaults changed");
+    Equal(250000L, loaded.BurnRateTokens); Near(1.5, loaded.BurnRateUSD);
+    var changed = loaded with { EnableClaude = false, EnableAntigravity = false, BurnRateTokens = 500000, BurnRateUSD = 0 };
+    store.Save(changed); Equal(changed, store.Load().Settings);
+    File.WriteAllText(store.FilePath, JsonSerializer.Serialize(changed with { BurnRateTokens = -1 }));
+    Check(store.Load().Warning is not null, "corrupt thresholds should be visible");
+}));
+
 Console.WriteLine($"{passed} passed, {failures} failed.");
 return failures == 0 ? 0 : 1;
 

@@ -39,7 +39,7 @@ public sealed record QuotaWindow(double UsedPercent, int? WindowMinutes, DateTim
 public sealed record RateLimit(string Provider, string? PlanType, QuotaWindow Primary,
     QuotaWindow? Secondary, DateTimeOffset UpdatedAt);
 public sealed record ParsedLog(IReadOnlyList<UsageEvent> Events, RateLimit? RateLimit = null);
-public enum SourceState { Ready, Missing, Error }
+public enum SourceState { Ready, Missing, Error, Disabled }
 public sealed record SourceStatus(string Provider, string Path, SourceState State, string Message);
 public sealed record ScanResult(IReadOnlyList<UsageEvent> Events, IReadOnlyList<RateLimit> RateLimits,
     IReadOnlyList<SourceStatus> Statuses);
@@ -90,7 +90,18 @@ public sealed record DailyPoint(DateTime Date, long Upstream, long Output, doubl
 public sealed record DashboardSnapshot(DateTimeOffset GeneratedAt, UsageTotals Totals,
     IReadOnlyList<ProviderSummary> Providers, IReadOnlyList<DailyPoint> Trend, UsageTotals Recent)
 {
-    public bool IsHighBurnRate => Recent.Total >= 250_000 || Recent.Cost >= 1.50;
+    public BurnRateThresholds AlertThresholds { get; init; } = new();
+    public bool IsHighBurnRate => AlertThresholds.IsExceeded(Recent);
+}
+
+public sealed record BurnRateThresholds(long Tokens = 250_000, double USD = 1.50)
+{
+    public void Validate()
+    {
+        if (Tokens < 0 || !double.IsFinite(USD) || USD < 0)
+            throw new ArgumentException("提醒阈值必须为非负数；Token 须为整数。填 0 可关闭对应提醒。");
+    }
+    public bool IsExceeded(UsageTotals usage) => Tokens > 0 && usage.Total >= Tokens || USD > 0 && usage.Cost >= USD;
 }
 
 public static class Formatting

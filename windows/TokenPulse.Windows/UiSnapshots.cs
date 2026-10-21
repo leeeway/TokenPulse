@@ -25,7 +25,8 @@ internal static class UiSnapshots
         var scan = new ScanResult(events, [quota], sources);
         var models = new OllamaResult([], "Ollama 未连接");
         var changed = 0;
-        var window = new MainWindow(() => { }, () => { }, () => changed++);
+        var settingsOpened = 0;
+        var window = new MainWindow(() => { }, () => settingsOpened++, () => changed++);
         try
         {
             window.Render(Aggregation.Build(scan, TimeWindow.Today, now), scan, models);
@@ -103,10 +104,28 @@ internal static class UiSnapshots
             window.SetSourcesExpanded(true);
             Descendants<ScrollViewer>(window).Single(s => s.Name == "DashboardScroll").ScrollToEnd();
             await ShowAndCapture(window, directory, "dashboard-source-details");
+            window.SetSourcesExpanded(false);
+            Descendants<ScrollViewer>(window).Single(s => s.Name == "DashboardScroll").ScrollToTop();
+            var disabled = new ScanResult([], [], sources.Select(s => s with { State = SourceState.Disabled, Message = "已关闭 · 不扫描" }).ToArray());
+            window.Render(Aggregation.Build(disabled, TimeWindow.Today, now), disabled, new([], "Ollama 查询已关闭"));
+            await ShowAndCapture(window, directory, "dashboard-sources-disabled");
+            if (!Descendants<TextBlock>(window).Any(t => t.Text == "日志扫描已关闭"))
+                throw new InvalidOperationException("Disabled sources were presented as missing logs.");
+            Descendants<Button>(window).Single(b => Equals(b.Content, "设置数据源"))
+                .RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (settingsOpened != 1) throw new InvalidOperationException("Empty-state settings action was not wired.");
+            window.Render(Aggregation.Build(scan, TimeWindow.Today, now) with { AlertThresholds = new(0, 0) }, scan, models);
+            if (Descendants<Border>(window).Single(b => b.Name == "HighBurnAlert").Visibility != Visibility.Collapsed)
+                throw new InvalidOperationException("Disabled burn warning remains visible.");
+            await ShowAndCapture(window, directory, "dashboard-alerts-disabled");
+            window.SetDataPending();
+            if (export.IsEnabled) throw new InvalidOperationException("Settings change left stale export enabled.");
         }
         finally { window.AllowClose = true; window.Close(); }
+        Settings? saved = null;
         var settings = new SettingsWindow(new Settings { StartWithWindows = true, ClaudeDirectory = sources[1].Path,
-            CodexDirectory = sources[0].Path, AntigravityDirectory = sources[2].Path, CustomEventsFile = sources[3].Path }, _ => null);
+            CodexDirectory = sources[0].Path, AntigravityDirectory = sources[2].Path, CustomEventsFile = sources[3].Path },
+            candidate => { saved = candidate; return "测试模式：未写入设置"; });
         try
         {
             await ShowAndCapture(settings, directory, "settings");
@@ -115,9 +134,39 @@ internal static class UiSnapshots
             await ShowAndCapture(settings, directory, "settings-maximized");
             if (settings.WindowState != WindowState.Maximized) throw new InvalidOperationException("Settings did not maximize.");
             Ui.ToggleMaximize(settings);
-            Descendants<ScrollViewer>(settings).Single(s => s.Name == "SettingsScroll").ScrollToEnd();
+            var sourceToggle = Descendants<CheckBox>(settings).Single(c => Equals(c.ToolTip, "启用 Claude Code"));
+            var sourcePath = Descendants<TextBox>(settings).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "Claude Code");
+            sourceToggle.IsChecked = false;
+            if (sourcePath.IsEnabled) throw new InvalidOperationException("Disabled source path remains editable.");
+            var originalPath = sourcePath.Text;
+            settings.Width = 460;
+            await ShowAndCapture(settings, directory, "settings-source-disabled");
+            Descendants<RadioButton>(settings).Single(r => Equals(r.Content, "运行偏好")).IsChecked = true;
             await ShowAndCapture(settings, directory, "settings-preferences");
-            if (Descendants<CheckBox>(settings).Count() != 2) throw new InvalidOperationException("Expected two preference switches.");
+            if (Descendants<CheckBox>(settings).Count() != 6) throw new InvalidOperationException("Expected four source and two preference switches.");
+            var tokenLimit = Descendants<TextBox>(settings).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "Token 阈值（整数）");
+            var costLimit = Descendants<TextBox>(settings).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "等效费用阈值（USD）");
+            var save = Descendants<Button>(settings).Single(b => Equals(b.Content, "保存设置"));
+            tokenLimit.Text = "-1";
+            save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (saved is not null) throw new InvalidOperationException("Negative alert threshold was accepted.");
+            tokenLimit.Text = "500000"; costLimit.Text = "0";
+            Descendants<RadioButton>(settings).Single(r => Equals(r.Content, "数据源")).IsChecked = true;
+            if (sourcePath.Text != originalPath || sourceToggle.IsChecked != false || tokenLimit.Text != "500000")
+                throw new InvalidOperationException("Settings tab switch lost unsaved edits.");
+            save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (saved is not { EnableClaude: false, BurnRateTokens: 500000, BurnRateUSD: 0 } || saved.ClaudeDirectory != originalPath)
+                throw new InvalidOperationException("Source/threshold changes did not reach the save callback.");
+            Descendants<RadioButton>(settings).Single(r => Equals(r.Content, "运行偏好")).IsChecked = true;
+            Descendants<Button>(settings).Single(b => Equals(b.Content, "恢复默认阈值"))
+                .RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (saved is not { BurnRateTokens: 250000, BurnRateUSD: 1.5 })
+                throw new InvalidOperationException("Restoring default thresholds did not update the settings.");
+            sourceToggle.IsChecked = true; sourcePath.Text = "relative";
+            save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (Descendants<RadioButton>(settings).Single(r => Equals(r.Content, "数据源")).IsChecked != true)
+                throw new InvalidOperationException("Invalid source path did not direct the user to data sources.");
         }
         finally { settings.Close(); }
         foreach (var warning in new[] { false, true })

@@ -16,6 +16,7 @@ internal sealed class App : Application
     private Mutex? instance;
     private bool ownsMutex, refreshing, settingsOpen;
     private ScanResult? scan;
+    private Settings? scanSettings;
     private OllamaResult localModels = new([], "正在查询 Ollama…");
     private string? settingsWarning;
     private long renderRevision;
@@ -58,6 +59,7 @@ internal sealed class App : Application
             // Exercise real WPF controls and tray initialization on Windows without reading user logs.
             var now = DateTimeOffset.Now;
             scan = new([UsageEvent.Create("smoke", Providers.Codex, "gpt-5-codex", now, "smoke", 1000, 0, 500, 100)], [], []);
+            scanSettings = settings;
             localModels = new([], "Smoke test");
             _ = RenderAsync(); dashboard.OpenNearTray();
             var smokeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -81,7 +83,7 @@ internal sealed class App : Application
             var result = await Task.Run(() => scanner.Scan(currentSettings, stopping.Token), stopping.Token);
             var models = currentSettings.EnableOllama ? await ollama.ReadAsync(stopping.Token) : new OllamaResult([], "Ollama 查询已关闭");
             if (currentSettings != settings || stopping.IsCancellationRequested) return;
-            scan = result; localModels = models;
+            scan = result; scanSettings = currentSettings; localModels = models;
             dashboard?.ShowError(settingsWarning);
             await RenderAsync();
         }
@@ -96,7 +98,7 @@ internal sealed class App : Application
     }
     private async Task RenderAsync()
     {
-        if (scan is null || dashboard is null) return;
+        if (scan is null || dashboard is null || scanSettings != settings) return;
         rendering?.Cancel();
         using var work = CancellationTokenSource.CreateLinkedTokenSource(stopping.Token);
         rendering = work;
@@ -104,13 +106,15 @@ internal sealed class App : Application
         var currentScan = scan;
         var currentModels = localModels;
         var currentWindow = dashboard.SelectedWindow;
+        var thresholds = settings.AlertThresholds();
         var now = DateTimeOffset.Now;
         try
         {
             var snapshots = await Task.Run(() =>
             {
-                var selected = Aggregation.Build(currentScan, currentWindow, now, cancellationToken: work.Token);
-                var today = currentWindow == TimeWindow.Today ? selected : Aggregation.Build(currentScan, TimeWindow.Today, now, cancellationToken: work.Token);
+                var selected = Aggregation.Build(currentScan, currentWindow, now, cancellationToken: work.Token) with { AlertThresholds = thresholds };
+                var today = currentWindow == TimeWindow.Today ? selected :
+                    Aggregation.Build(currentScan, TimeWindow.Today, now, cancellationToken: work.Token) with { AlertThresholds = thresholds };
                 return (selected, today);
             }, work.Token);
             // A newer scan or period selection must win even if an earlier job finishes last.
@@ -152,7 +156,10 @@ internal sealed class App : Application
                 startupChanged = true;
             }
             store.Save(candidate);
+            rendering?.Cancel();
+            renderRevision++;
             settings = candidate; settingsWarning = null;
+            dashboard?.SetDataPending();
             return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException)

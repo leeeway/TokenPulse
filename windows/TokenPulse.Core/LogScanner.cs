@@ -15,13 +15,14 @@ public sealed class LogScanner
             List<RateLimit> limits = [];
             List<SourceStatus> statuses = [];
             HashSet<(string Provider, string Path)> visited = [];
-            foreach (var (provider, root, singleFile) in new[]
-            {
-                (Providers.Claude, settings.ClaudeDirectory, false), (Providers.Codex, settings.CodexDirectory, false),
-                (Providers.Antigravity, settings.AntigravityDirectory, false), (Providers.Custom, settings.CustomEventsFile, true)
-            })
+            foreach (var (provider, root, singleFile, enabled) in settings.LogSources())
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!enabled)
+                {
+                    statuses.Add(new(provider, root, SourceState.Disabled, "已关闭 · 不扫描"));
+                    continue;
+                }
                 var errors = new List<string>();
                 var count = 0;
                 var state = SourceState.Ready;

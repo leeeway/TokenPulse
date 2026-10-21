@@ -2,6 +2,15 @@
 
 Status recorded on 2026-10-20. Host: macOS arm64. SDK used for C#: .NET 10.0.402 installed temporarily outside the repository.
 
+## 2026-10-21 evolution: Windows 0.4.0
+
+- Added independent persistent switches for the four log sources. Disabled sources are not accessed, are excluded from statistics, and have their cached parses evicted. Re-enabling reparses history. Status distinguishes disabled from missing/error; the empty dashboard links directly to settings.
+- Added configurable five-minute token/cost thresholds with independent zero-to-disable semantics. Both dashboard and tray use the same threshold-bearing snapshot; defaults retain 0.3.0 behavior.
+- Split settings into source and behavior tabs, preserving unsaved edits. Only enabled paths require validation. Threshold input rejects negatives/non-finite values, and a scoped reset restores only the default thresholds.
+- Saving settings cancels stale aggregation, tags scans with the settings used to read them, and disables export until a matching scan is displayed.
+- Core regression additions cover all 16 source combinations, disabled invalid paths, cache invalidation/re-enable, old JSON defaults, persistence, threshold boundaries and independent disabling. WPF scenarios exercise disabled-source and disabled-alert states, tab persistence, source input disabling, invalid threshold rejection, defaults restoration, and the settings callback.
+- Windows 11 physical mixed-DPI, tray/Explorer recovery and file-dialog interaction still require the manual checklist. Existing Mac sources/build configuration are unchanged.
+
 ## 2026-10-21 review: Windows 0.3.0
 
 Review scope: refresh/aggregation, dashboard state, quota freshness and useful drill-downs. Existing macOS files are outside this change.
