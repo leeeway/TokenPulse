@@ -126,10 +126,15 @@ internal static class UiSnapshots
             window.SetSourcesExpanded(true);
             window.Render(Aggregation.Build(uncertain, TimeWindow.Today, now), uncertain, models);
             if (Descendants<Border>(window).Single(b => b.Name == "HighBurnAlert").Visibility != Visibility.Collapsed
-                || !Descendants<TextBlock>(window).Any(t => t.Text.Contains("1 条时间未知"))
+                || !Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("1 条记录时间未知") && t.Visibility == Visibility.Visible && t.TextWrapping == TextWrapping.Wrap)
+                || !Descendants<TextBlock>(window).Any(t => t.Text == "当前周期没有可确认时间的记录")
                 || !Descendants<TextBlock>(window).Any(t => t.Text.Contains("1 项需检查")))
                 throw new InvalidOperationException("Uncertain usage or parser warnings are not displayed correctly.");
             await ShowAndCapture(window, directory, "dashboard-data-quality");
+            window.Render(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
+            if (!Descendants<TextBlock>(window).Any(t => t.Text == "等待第一条用量记录")
+                || Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("0 条记录时间未知") && t.Visibility == Visibility.Visible))
+                throw new InvalidOperationException("Data-quality notice or empty state did not clear on refresh.");
         }
         finally { window.AllowClose = true; window.Close(); }
         Settings? saved = null;

@@ -11,6 +11,7 @@ internal sealed class MainWindow : Window
     private readonly TextBlock cache = Ui.Text("—", 25, Ui.Green, FontWeights.SemiBold);
     private readonly TextBlock cost = Ui.Text("—", 25, Ui.Amber, FontWeights.SemiBold);
     private readonly TextBlock sessions = Ui.Text("正在读取", 10, Ui.Muted);
+    private readonly TextBlock timestampNotice = Ui.Text("", 10.5, Ui.Amber);
     private readonly TextBlock saved = Ui.Text("缓存节省", 10, Ui.Muted);
     private readonly TextBlock upstream = Ui.Text("↑ —", 12, Ui.Blue, FontWeights.SemiBold);
     private readonly TextBlock downstream = Ui.Text("↓ —", 12, Ui.Accent, FontWeights.SemiBold);
@@ -42,6 +43,7 @@ internal sealed class MainWindow : Window
     private DateTimeOffset providersRenderedAt;
     private bool sourcesExpanded;
     private bool renderedAllDisabled;
+    private bool renderedHasUnknownUsage;
     public TimeWindow SelectedWindow { get; private set; } = TimeWindow.Today;
     internal bool HasRendered => renderedSnapshot is not null;
     public bool AllowClose { get; set; }
@@ -110,6 +112,8 @@ internal sealed class MainWindow : Window
         Ui.Put(metrics, Metric("总 Token", tokens, sessions), 0); Ui.Put(metrics, Metric("缓存命中", cache, saved), 2);
         Ui.Put(metrics, Metric("API 价值", cost, Ui.Text("等效费用估算", 10, Ui.Muted)), 4);
         body.Children.Add(metrics); Ui.Gap(body, 10);
+        timestampNotice.Margin = new Thickness(2, 0, 2, 10); timestampNotice.Visibility = Visibility.Collapsed;
+        body.Children.Add(timestampNotice);
         var flowBody = new StackPanel();
         var directions = Ui.Columns(new(1, GridUnitType.Star), new(1, GridUnitType.Star));
         Ui.Put(directions, upstream, 0); downstream.HorizontalAlignment = HorizontalAlignment.Right; Ui.Put(directions, downstream, 1); flowBody.Children.Add(directions);
@@ -158,7 +162,9 @@ internal sealed class MainWindow : Window
         var t = snapshot.Totals;
         tokens.Text = Formatting.Tokens(t.Total); cache.Text = t.CacheHitRatio.ToString("P1"); cost.Text = Formatting.Usd(t.Cost);
         sessions.Text = $"{t.Sessions} 会话 · {t.Events} 步";
-        if (snapshot.UnknownTimestampEvents > 0) sessions.Text += $" · {snapshot.UnknownTimestampEvents} 条时间未知";
+        var hasUnknownUsage = snapshot.UnknownTimestampEvents > 0;
+        timestampNotice.Visibility = hasUnknownUsage ? Visibility.Visible : Visibility.Collapsed;
+        timestampNotice.Text = $"{snapshot.UnknownTimestampEvents} 条记录时间未知，仅计入「全部」，不参与趋势和高消耗提醒。";
         sessions.ToolTip = snapshot.UnknownTimestampEvents > 0
             ? "时间未知的记录仅计入「全部」，不参与今日、7 天、30 天、趋势和高消耗提醒。" : sessions.Text;
         saved.Text = $"已省 {Formatting.Usd(t.Saved)}"; saved.ToolTip = $"缓存读取节省的估算费用：{Formatting.Usd(t.Saved)}";
@@ -176,20 +182,24 @@ internal sealed class MainWindow : Window
         providerCount.Text = $"{snapshot.Providers.Count} 个来源";
         var allDisabled = scan.Statuses.Count > 0 && scan.Statuses.All(s => s.State == SourceState.Disabled);
         // Keep interactive rows (and keyboard focus) intact on unchanged timer ticks.
-        if (!SameProviders(snapshot.Providers, snapshot.GeneratedAt) || allDisabled != renderedAllDisabled)
+        if (!SameProviders(snapshot.Providers, snapshot.GeneratedAt) || allDisabled != renderedAllDisabled || hasUnknownUsage != renderedHasUnknownUsage)
         {
             providerRows.Children.Clear();
             if (snapshot.Providers.Count == 0)
             {
                 var empty = new StackPanel { Margin = new Thickness(4, 6, 4, 6) };
-                empty.Children.Add(Ui.Text(allDisabled ? "日志扫描已关闭" : "等待第一条用量记录", 13, Ui.Ink, FontWeights.SemiBold)); Ui.Gap(empty, 6);
-                empty.Children.Add(Ui.Text(allDisabled ? "在设置中开启需要的数据源，即可恢复统计。" : "开始使用 AI 工具，或在设置中选择日志目录。", 11, Ui.Muted));
-                var configure = Ui.Button("设置数据源", openSettings);
-                configure.HorizontalAlignment = HorizontalAlignment.Left; configure.Margin = new Thickness(0, 10, 0, 0);
-                empty.Children.Add(configure); providerRows.Children.Add(Ui.Card(empty));
+                empty.Children.Add(Ui.Text(allDisabled ? "日志扫描已关闭" : hasUnknownUsage ? "当前周期没有可确认时间的记录" : "等待第一条用量记录", 13, Ui.Ink, FontWeights.SemiBold)); Ui.Gap(empty, 6);
+                empty.Children.Add(Ui.Text(allDisabled ? "在设置中开启需要的数据源，即可恢复统计。" : hasUnknownUsage ? "已有时间未知的用量，请切换到「全部」查看。" : "开始使用 AI 工具，或在设置中选择日志目录。", 11, Ui.Muted));
+                if (allDisabled || !hasUnknownUsage)
+                {
+                    var configure = Ui.Button("设置数据源", openSettings);
+                    configure.HorizontalAlignment = HorizontalAlignment.Left; configure.Margin = new Thickness(0, 10, 0, 0);
+                    empty.Children.Add(configure);
+                }
+                providerRows.Children.Add(Ui.Card(empty));
             }
             foreach (var provider in snapshot.Providers) providerRows.Children.Add(ProviderCard(provider, snapshot.GeneratedAt));
-            renderedProviders = snapshot.Providers; providersRenderedAt = snapshot.GeneratedAt; renderedAllDisabled = allDisabled;
+            renderedProviders = snapshot.Providers; providersRenderedAt = snapshot.GeneratedAt; renderedAllDisabled = allDisabled; renderedHasUnknownUsage = hasUnknownUsage;
         }
         RenderTrend(snapshot.Trend); localModelRows.Children.Clear(); localModelCard.Visibility = ollama.Models.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         foreach (var model in ollama.Models) localModelRows.Children.Add(Ui.Text($"{model.Name}  ·  显存 {model.VramBytes / 1073741824.0:F1} GiB", 11, Ui.Muted));
