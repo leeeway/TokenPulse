@@ -29,6 +29,8 @@ Windows 面板采用紧凑的圆角窗口、分段周期选择、三张用量指
 
 ![TokenPulse Windows 偏好设置](docs/settings.png)
 
+![TokenPulse Windows 提醒与运行偏好](docs/settings-preferences.png)
+
 每次 Windows CI 还会生成 `Windows-UI-previews` 附件：使用合成数据直接渲染 WPF 的正常、预警、空数据、窄窗口多来源、数据源详情和设置页，分别导出 100% 与 150% 图像。截图不含真实用户日志。可在 Windows 上手动运行：
 
 ```powershell

@@ -9,6 +9,7 @@ Status recorded on 2026-10-20. Host: macOS arm64. SDK used for C#: .NET 10.0.402
 - Split settings into source and behavior tabs, preserving unsaved edits. Only enabled paths require validation. Threshold input rejects negatives/non-finite values, and a scoped reset restores only the default thresholds.
 - Saving settings cancels stale aggregation, tags scans with the settings used to read them, and disables export until a matching scan is displayed.
 - Core regression additions cover all 16 source combinations, disabled invalid paths, cache invalidation/re-enable, old JSON defaults, persistence, threshold boundaries and independent disabling. WPF scenarios exercise disabled-source and disabled-alert states, tab persistence, source input disabling, invalid threshold rejection, defaults restoration, and the settings callback.
+- [Windows CI for `16b9561`](https://github.com/leeeway/TokenPulse/actions/runs/39527572441) passed 26 core tests, self-contained packaging, actual WPF/tray startup and visual scenarios. The generated dashboard/settings screenshots were inspected and saved in `docs/`. [Independent macOS CI](https://github.com/leeeway/TokenPulse/actions/runs/39527572542) also passed; local Swift tests (3) and Release build passed.
 - Windows 11 physical mixed-DPI, tray/Explorer recovery and file-dialog interaction still require the manual checklist. Existing Mac sources/build configuration are unchanged.
 
 ## 2026-10-21 review: Windows 0.3.0
