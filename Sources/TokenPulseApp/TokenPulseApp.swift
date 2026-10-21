@@ -17,9 +17,13 @@ struct TokenPulseMainApp: App {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: viewModel.snapshot.isHighBurnRate ? "flame.fill" : "bolt.fill")
-                Text(viewModel.menuBarText)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                if !viewModel.menuBarText.isEmpty {
+                    Text(viewModel.menuBarText)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                }
             }
+            .help("TokenPulse · \(viewModel.selectedWindow.title) · \(TokenFormatters.compactTokens(viewModel.snapshot.grandTotalTokens)) Token · \(TokenFormatters.usd(viewModel.snapshot.totalCostUSD))")
+            .accessibilityLabel("TokenPulse AI 用量")
         }
         .menuBarExtraStyle(.window)
     }

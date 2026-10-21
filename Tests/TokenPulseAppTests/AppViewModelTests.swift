@@ -140,6 +140,22 @@ struct AppViewModelTests {
         defaults.set("invalid", forKey: "displayMode")
         let fallback = AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false)
         #expect(fallback.selectedWindow == .today)
-        #expect(fallback.displayMode == .tokensAndCost)
+        #expect(fallback.displayMode == .iconOnly)
+    }
+
+    @Test @MainActor
+    func compactMenuBarUsesOnlyAnIconAndKeepsTextModesAvailable() throws {
+        let suite = "TokenPulse.Tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppViewModel(collector: ControlledCollector(), defaults: defaults, startsAutomatically: false)
+        #expect(model.displayMode == .iconOnly)
+        #expect(model.menuBarText.isEmpty)
+        model.displayMode = .tokensAndCost
+        #expect(!model.menuBarText.isEmpty)
+        model.displayMode = .iconOnly
+        let restored = AppViewModel(collector: ControlledCollector(), defaults: defaults, startsAutomatically: false)
+        #expect(restored.displayMode == .iconOnly)
+        #expect(restored.menuBarText.isEmpty)
     }
 }

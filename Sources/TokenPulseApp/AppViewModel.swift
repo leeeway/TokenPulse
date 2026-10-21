@@ -4,6 +4,7 @@ import Foundation
 import TokenPulseCore
 
 public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
+    case iconOnly = "icon_only"
     case tokensAndCost = "tokens_cost"
     case upDownStream = "up_down"
     case costOnly = "cost_only"
@@ -12,6 +13,7 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
 
     public var label: String {
         switch self {
+        case .iconOnly: return "仅图标（适合刘海屏）"
         case .tokensAndCost: return "总 Token + 价值"
         case .upDownStream: return "上下行 Token"
         case .costOnly: return "仅显示 API 价值"
@@ -68,7 +70,7 @@ public final class AppViewModel: ObservableObject {
         self.clock = clock
         let window = defaults.string(forKey: "selectedWindow").flatMap(TimeWindow.init(rawValue:)) ?? .today
         selectedWindow = window
-        displayMode = defaults.string(forKey: "displayMode").flatMap(MenuBarDisplayMode.init(rawValue:)) ?? .tokensAndCost
+        displayMode = defaults.string(forKey: "displayMode").flatMap(MenuBarDisplayMode.init(rawValue:)) ?? .iconOnly
         snapshot = UsageCollector.buildSnapshot(allEvents: [], rateLimits: [:], runningLocalModels: [], window: window, now: clock())
         if startsAutomatically {
             timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
@@ -117,6 +119,8 @@ public final class AppViewModel: ObservableObject {
     public var menuBarText: String {
         let s = snapshot
         switch displayMode {
+        case .iconOnly:
+            return ""
         case .tokensAndCost:
             return "\(TokenFormatters.compactTokens(s.grandTotalTokens)) · \(TokenFormatters.usd(s.totalCostUSD))"
         case .upDownStream:
