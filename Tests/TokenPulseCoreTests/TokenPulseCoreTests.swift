@@ -53,6 +53,8 @@ struct TokenPulseCoreTests {
         #expect(parsed.rateLimit?.primaryUsedPercent == 12.5)
         #expect(parsed.rateLimit?.secondaryUsedPercent == 4.0)
         #expect(parsed.rateLimit?.planType == "team")
+        #expect(parsed.rateLimit?.primaryResetsAt == Date(timeIntervalSince1970: 1792319147))
+        #expect(parsed.rateLimit?.secondaryResetsAt == Date(timeIntervalSince1970: 1792905947))
     }
 
     @Test("AntigravityAdapter parses transcript.jsonl steps")
@@ -70,5 +72,41 @@ struct TokenPulseCoreTests {
         #expect(events[0].upstreamTokens == 60_000)
         #expect(events[0].downstreamTokens == 400)
         #expect(events[0].totalTokens == 60_400)
+    }
+    @Test("Quota reset text uses local time and distinguishes expired, missing and cross-year records")
+    func testQuotaResetPresentation() throws {
+        let now = try #require(ISO8601DateFormatter().date(from: "2026-10-21T04:00:00Z"))
+        let zone = try #require(TimeZone(secondsFromGMT: 8 * 3600))
+        #expect(TokenFormatters.quotaReset(now.addingTimeInterval(7200), now: now, timeZone: zone) == "重置 10/21 14:00")
+        #expect(TokenFormatters.quotaReset(now, now: now, timeZone: zone) == "上次重置 10/21 12:00 · 待更新")
+        #expect(TokenFormatters.quotaReset(nil, now: now, timeZone: zone) == "日志未提供重置时间")
+        let nextYear = try #require(ISO8601DateFormatter().date(from: "2026-12-31T20:00:00Z"))
+        #expect(TokenFormatters.quotaReset(nextYear, now: now, timeZone: zone) == "重置 2027/01/01 04:00")
+        #expect(TokenFormatters.quotaWindow(300) == "5h")
+        #expect(TokenFormatters.quotaWindow(10080) == "7d")
+        #expect(TokenFormatters.quotaWindow(90) == "90m")
+        #expect(TokenFormatters.quotaWindow(nil) == "窗口")
+    }
+
+    @Test("Compact provider rows show the latest three without dropping aggregate or JSON totals")
+    func testCompactProviderPresentation() throws {
+        let now = Date(timeIntervalSince1970: 1792540800)
+        let providers: [AIProvider] = [.codex, .antigravity, .cursor, .custom, .claudeCode]
+        let events = providers.enumerated().map { index, provider in
+            TokenUsageEvent(id: "\(index)", provider: provider, model: "model", timestamp: now.addingTimeInterval(Double(-index * 60)),
+                            sessionId: "session", inputTokens: index == 4 ? 900_000 : 10, outputTokens: 0)
+        }
+        let quota = RateLimitSnapshot(provider: .ollama, planType: nil, primaryUsedPercent: 10,
+                                      primaryWindowMinutes: 300, primaryResetsAt: nil, updatedAt: now)
+        let snapshot = UsageCollector.buildSnapshot(allEvents: events, rateLimits: [.ollama: quota],
+                                                   runningLocalModels: [], window: .allTime, now: now)
+        #expect(snapshot.providers.count == 6)
+        #expect(snapshot.recentProviders.map(\.provider) == [.codex, .antigravity, .cursor])
+        #expect(snapshot.grandTotalTokens == 900_040)
+        #expect(snapshot.providers.first?.provider == .claudeCode)
+        let data = try JSONEncoder().encode(snapshot)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect((json["providers"] as? [[String: Any]])?.count == 6)
+        #expect(json["recentProviders"] == nil)
     }
 }

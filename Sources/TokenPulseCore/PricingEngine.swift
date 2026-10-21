@@ -93,6 +93,27 @@ public enum PricingEngine {
 
 /// Human-friendly formatters for token counts, costs, and percentages.
 public enum TokenFormatters {
+    public static func quotaWindow(_ minutes: Int?) -> String {
+        guard let minutes, minutes > 0 else { return "窗口" }
+        if minutes % 1440 == 0 { return "\(minutes / 1440)d" }
+        if minutes % 60 == 0 { return "\(minutes / 60)h" }
+        return "\(minutes)m"
+    }
+
+    public static func quotaReset(_ reset: Date?, now: Date = Date(), timeZone: TimeZone = .current) -> String {
+        guard let reset else { return "日志未提供重置时间" }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = timeZone
+        formatter.dateFormat = calendar.component(.year, from: reset) == calendar.component(.year, from: now)
+            ? "MM/dd HH:mm" : "yyyy/MM/dd HH:mm"
+        let date = formatter.string(from: reset)
+        return reset <= now ? "上次重置 \(date) · 待更新" : "重置 \(date)"
+    }
+
     public static func compactTokens(_ count: Int) -> String {
         let absVal = abs(Double(count))
         let sign = count < 0 ? "-" : ""

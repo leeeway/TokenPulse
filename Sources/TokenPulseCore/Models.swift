@@ -275,6 +275,17 @@ public struct DashboardSnapshot: Codable, Sendable, Equatable {
     public let recentEvents: [TokenUsageEvent]
     public let runningLocalModels: [LocalRunningModel]
 
+    /// Compact menu-bar presentation; complete provider totals remain in `providers`.
+    public var recentProviders: [ProviderSummary] {
+        Array(providers.sorted {
+            if $0.lastActiveAt != $1.lastActiveAt {
+                return ($0.lastActiveAt ?? .distantPast) > ($1.lastActiveAt ?? .distantPast)
+            }
+            if $0.totalTokens != $1.totalTokens { return $0.totalTokens > $1.totalTokens }
+            return $0.provider.rawValue < $1.provider.rawValue
+        }.prefix(3))
+    }
+
     public var totalUpstreamTokens: Int {
         totalInputTokens + totalCacheWriteTokens + totalCacheReadTokens
     }

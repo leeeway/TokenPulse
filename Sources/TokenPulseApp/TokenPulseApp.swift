@@ -232,6 +232,11 @@ struct DashboardPopoverView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                if s.providers.count > 3 {
+                    Text("最近 3 / \(s.providers.count)")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                }
                 if !s.runningLocalModels.isEmpty {
                     Text("Ollama 活跃: \(s.runningLocalModels.count)")
                         .font(.system(size: 10, weight: .medium))
@@ -246,8 +251,8 @@ struct DashboardPopoverView: View {
                     .padding(.vertical, 12)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
-                ForEach(s.providers) { p in
-                    ProviderRowView(summary: p, grandTotal: max(1, s.grandTotalTokens))
+                ForEach(s.recentProviders) { p in
+                    ProviderRowView(summary: p, grandTotal: max(1, s.grandTotalTokens), now: s.generatedAt)
                 }
             }
         }
@@ -329,6 +334,7 @@ struct DashboardPopoverView: View {
 struct ProviderRowView: View {
     let summary: ProviderSummary
     let grandTotal: Int
+    let now: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -374,23 +380,39 @@ struct ProviderRowView: View {
             .foregroundStyle(.secondary)
 
             if let rl = summary.rateLimit {
-                HStack(spacing: 8) {
-                    Text("5h 配额 \(Int(rl.primaryUsedPercent))%")
-                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    ProgressView(value: min(100, max(0, rl.primaryUsedPercent)), total: 100)
-                        .controlSize(.mini)
+                HStack(alignment: .top, spacing: 10) {
+                    quotaColumn(used: rl.primaryUsedPercent, minutes: rl.primaryWindowMinutes, resetsAt: rl.primaryResetsAt)
                     if let sec = rl.secondaryUsedPercent {
-                        Text("7d 配额 \(Int(sec))%")
-                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                        ProgressView(value: min(100, max(0, sec)), total: 100)
-                            .controlSize(.mini)
+                        quotaColumn(used: sec, minutes: rl.secondaryWindowMinutes, resetsAt: rl.secondaryResetsAt)
                     }
                 }
                 .foregroundStyle(.secondary)
+                .help("配额记录于 \(rl.updatedAt.formatted(date: .numeric, time: .standard))；以日志为准")
             }
         }
         .padding(8)
         .background(Color.primary.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func quotaColumn(used: Double, minutes: Int?, resetsAt: Date?) -> some View {
+        let expired = resetsAt.map { $0 <= now } ?? false
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text(TokenFormatters.quotaWindow(minutes) + " 配额")
+                Spacer(minLength: 4)
+                Text((expired ? "上次 " : "") + TokenFormatters.percent(used / 100))
+            }
+            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+            ProgressView(value: min(100, max(0, used)), total: 100)
+                .controlSize(.mini)
+                .tint(expired ? .gray : .accentColor)
+                .opacity(expired ? 0.4 : 1)
+            Text(TokenFormatters.quotaReset(resetsAt, now: now))
+                .font(.system(size: 9))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(resetsAt.map { "本地重置时间：\($0.formatted(date: .complete, time: .standard))" } ?? "日志未提供重置时间")
     }
 }
