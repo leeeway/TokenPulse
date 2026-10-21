@@ -16,6 +16,8 @@
 
 ## 下载 / Downloads
 
+[项目官网 / Website](https://lwblog.cn/projects/tokenpulse/) · [全部项目 / All projects](https://lwblog.cn/projects/)
+
 - [macOS Apple Silicon · 0.1.2 Preview](https://github.com/leeeway/TokenPulse/releases/tag/mac-v0.1.2)：macOS 14+，包含应用压缩包与 SHA-256 校验文件。
 - [Windows x64 · 0.4.2 Preview](https://github.com/leeeway/TokenPulse/releases/tag/windows-v0.4.2)：Windows 11 x64，独立 Windows 客户端及校验文件。
 

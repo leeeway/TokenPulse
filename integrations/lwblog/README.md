@@ -32,6 +32,8 @@ CardPulse 的 HTML、模块 worker 与 WASM 需要正确 MIME 类型，`.mjs` �
 
 `nginx-cardpulse.conf.example` 提供该 HTTPS 站点的路径配置，`nginx-cardpulse-security.conf` 提供应用专属安全头。应先检查现有 location 和安全头，备份配置后再合并；`nginx -t` 成功后仅 reload Nginx。禁止修改或重启代理服务。
 
+`deploy-static.sh` 适用于已核对的现有 lwblog.cn 主机。上传目录包含 `site.tar.gz`（Astro dist 内容）、上述两个 Nginx 文件及记录这些文件摘要的 `SHA256SUMS.txt`，再在服务器执行 `bash deploy-static.sh /path/to/upload`。脚本校验摘要、保留站点/配置备份与独立 release，失败恢复所改路径；不会清理旧的不可变资源。线上浏览器验收在脚本之后执行。
+
 网页版保险库以浏览器和站点 origin 为边界，与 GitHub Pages、本地开发地址或桌面版数据不互通。换地址前应备份；不自动读取或迁移任何用户账单。
 
 ## 验收
