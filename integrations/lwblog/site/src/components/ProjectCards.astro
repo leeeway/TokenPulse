@@ -1,0 +1,22 @@
+---
+import catalog from '../data/projects.json';
+import '../styles/projects.css';
+const { lang = 'zh', featuredOnly = false } = Astro.props;
+const zh = lang === 'zh';
+const prefix = zh ? '' : '/en';
+const projects = catalog.filter(p => !featuredOnly || p.featured);
+---
+<div class="project-grid">
+  {projects.map(project => <article class:list={['project-tile', `tone-${project.accent}`]}>
+    <a class="project-visual" href={`${prefix}/projects/${project.id}/`} aria-label={`${zh ? '了解' : 'Explore'} ${project.name}`}>
+      {project.id === 'tokenpulse' ? <div class="mini-monitor"><div class="mini-monitor-top"><b>↯</b><strong>TokenPulse</strong><i></i></div><p>{zh ? 'AI 用量，一眼掌握' : 'AI usage, clearly in view'}</p><div class="mini-numbers"><strong>1.42M<small>Token</small></strong><strong>92.9%<small>{zh ? '缓存命中' : 'cache hit'}</small></strong></div><div class="mini-track"><span></span></div><div class="mini-label"><span>Claude · Codex · Gemini</span><span>{zh ? '示例' : 'SAMPLE'}</span></div></div>
+      : project.id === 'cardpulse' ? <div class="mini-ledger"><div class="mini-bank"><span>CardPulse</span><b>•••• 1234</b><strong>{zh ? '每一笔，都看得清。' : 'Every transaction, in view.'}</strong></div><div class="mini-transaction"><span>{zh ? '示例交易' : 'Sample transaction'}</span><strong>HK$ 128.00</strong></div><div class="mini-transaction"><span>{zh ? '返现估算' : 'Reward estimate'}</span><strong>+ HK$ 2.56</strong></div></div>
+      : project.id === 'daily-trend-radar' ? <div class="mini-radar"><div class="mini-radar-orbit"><span>✳</span></div><strong>{zh ? '读一点，想远一点。' : 'A little reading. A wider view.'}</strong><p>OPEN SOURCE · HN · SECURITY</p></div>
+      : <div class="mini-logmind"><span>⌘</span><strong>LogMind</strong><p>{zh ? '查询 → 分析 → 通知' : 'Query → Investigate → Notify'}</p></div>}
+    </a>
+    <div class="project-tile-copy"><p class="eyebrow">{project.category[lang]}</p><h3><a href={`${prefix}/projects/${project.id}/`}>{project.id === 'daily-trend-radar' && !zh ? 'Tech Radar' : project.name}</a></h3><p>{project.summary[lang]}</p>
+      <ul class="project-tags" aria-label={zh ? '平台与技术' : 'Platforms and technologies'}>{project.tags.map(tag => <li>{tag}</li>)}</ul>
+      <div class="project-tile-actions"><a href={`${prefix}/projects/${project.id}/`}>{zh ? '了解项目' : 'Explore project'} <span aria-hidden="true">↗</span></a><a href={project.repo} target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a></div>
+    </div>
+  </article>)}
+</div>

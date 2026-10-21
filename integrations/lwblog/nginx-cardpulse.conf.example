@@ -1,0 +1,19 @@
+# Include inside the lwblog.cn HTTPS server block after reviewing its existing
+# locations. These locations override inherited add_header directives; retain all
+# security headers here and leave the main site's CSP untouched.
+location /apps/cardpulse/ {
+    include /etc/nginx/snippets/lwblog-cardpulse-security.conf;
+    try_files $uri $uri/ =404;
+}
+
+location ~ ^/apps/cardpulse/.*\.mjs$ {
+    types { application/javascript mjs; }
+    include /etc/nginx/snippets/lwblog-cardpulse-security.conf;
+    try_files $uri =404;
+}
+
+location ~ ^/apps/cardpulse/.*\.wasm$ {
+    types { application/wasm wasm; }
+    include /etc/nginx/snippets/lwblog-cardpulse-security.conf;
+    try_files $uri =404;
+}

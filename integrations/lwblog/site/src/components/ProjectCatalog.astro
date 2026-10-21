@@ -1,0 +1,11 @@
+---
+import ProjectLayout from './ProjectLayout.astro';
+import ProjectCards from './ProjectCards.astro';
+const { lang = 'zh' } = Astro.props;
+const zh = lang === 'zh';
+---
+<ProjectLayout lang={lang} title={zh ? '项目' : 'Projects'} description={zh ? 'leeway 的个人项目：AI 用量监控、账单整理、技术雷达与日志分析。' : 'Personal projects by leeway: AI usage, statement organization, developer reading and log analysis.'}>
+  <section class="catalog-intro wrap"><p class="eyebrow">THOUGHTFULLY BUILT · OPENLY SHARED</p><h1>{zh ? '小工具。' : 'Small tools.'}<br /><span class="gradient-text">{zh ? '用在真实的日常。' : 'For real, everyday work.'}</span></h1><p>{zh ? '从看见 AI 消耗，到整理自己的账单。把反复遇见的问题，做成持续打磨的项目。' : 'From understanding AI usage to organizing statements. Turning recurring problems into projects worth refining.'}</p></section>
+  <section class="catalog-projects wrap" aria-label={zh ? '项目列表' : 'Project list'}><ProjectCards lang={lang} /></section>
+  <section class="project-open-note wrap"><span aria-hidden="true">✳</span><div><h2>{zh ? '每个项目，都有下一页。' : 'Every project has a next chapter.'}</h2><p>{zh ? '介绍、使用入口和源码放在一起。欢迎在对应仓库提出问题，或参与改进。' : 'Overviews, access and source code, together. Report an issue or contribute in the corresponding repository.'}</p></div><a href="https://github.com/leeeway" target="_blank" rel="noopener noreferrer">GitHub ↗</a></section>
+</ProjectLayout>

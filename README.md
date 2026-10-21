@@ -14,6 +14,15 @@
 
 ---
 
+## 下载 / Downloads
+
+- [macOS Apple Silicon · 0.1.2 Preview](https://github.com/leeeway/TokenPulse/releases/tag/mac-v0.1.2)：macOS 14+，包含应用压缩包与 SHA-256 校验文件。
+- [Windows x64 · 0.4.2 Preview](https://github.com/leeeway/TokenPulse/releases/tag/windows-v0.4.2)：Windows 11 x64，独立 Windows 客户端及校验文件。
+
+预览包尚未获得 Apple 公证或 Windows 代码签名，请阅读对应版本说明。Windows 使用与构建说明见 [windows/README.md](windows/README.md)。个人网站集成源码与部署说明见 [integrations/lwblog](integrations/lwblog/README.md)。
+
+---
+
 ## ✨ Why TokenPulse? / 为什么做这个项目？
 
 重度 AI 开发者每天同时在 Mac 上运行 **Claude Code、OpenAI Codex、Google Antigravity、Cursor、Ollama** 等多个 AI 编程与对话工具，却常常面临三大痛点：

@@ -1,0 +1,84 @@
+[
+  {
+    "id": "tokenpulse", "name": "TokenPulse", "featured": true, "accent": "violet", "symbol": "↯",
+    "repo": "https://github.com/leeeway/TokenPulse",
+    "category": {"zh":"AI 用量 · 桌面工具","en":"AI usage · Desktop utility"},
+    "headline": {"zh":"让 AI 消耗，\n变得一目了然。","en":"Your AI usage.\nClearly in view."},
+    "summary": {"zh":"在菜单栏与系统托盘里，查看 Token 用量、缓存命中和已有配额记录。","en":"See token usage, cache hits and recorded quotas from your menu bar or system tray."},
+    "body": {"zh":"为每天使用 AI 编程工具的人做一个轻量的观察窗口。读取本机日志，按今日、7 天、30 天或全部查看用量，并将日志中提供的配额重置时间放到眼前。","en":"A lightweight window into everyday AI coding. Read local logs, explore daily and longer-term usage, and see quota reset times supplied by those logs."},
+    "tags":["macOS","Windows","Swift / C#"],
+    "image":"/projects/media/tokenpulse-mac.png",
+    "imageAlt":{"zh":"TokenPulse Mac 原生面板，使用示例数据展示重置倒计时","en":"Native TokenPulse Mac dashboard with illustrative usage and reset countdowns"},
+    "imageNote":{"zh":"原生界面 · 示例数据","en":"Native interface · Illustrative data"},
+    "primary":{"zh":"选择下载版本","en":"Choose a download","href":"#downloads"},
+    "features":[
+      {"zh":"本地日志读取","en":"Read local logs","body":{"zh":"支持 Claude Code、Codex、Antigravity 和自定义 JSONL；Ollama 显示运行模型。","en":"Supports Claude Code, Codex, Antigravity and custom JSONL. Ollama shows running models."}},
+      {"zh":"清晰的用量统计","en":"Understand usage","body":{"zh":"查看上下行、缓存、趋势与估算费用。时间未知的记录不参与实时告警。","en":"Explore input, output, caching, trends and estimated cost. Undated usage does not trigger live alerts."}},
+      {"zh":"配额与重置时间","en":"Quota reset times","body":{"zh":"显示日志中已有的配额及重置时间，过期记录明确等待更新。","en":"Shows recorded quotas and reset times, with an explicit pending state after expiry."}},
+      {"zh":"轻量常驻","en":"Stay within reach","body":{"zh":"Mac 菜单栏、Windows 系统托盘；关闭面板后继续后台运行。","en":"Lives in the Mac menu bar or Windows tray and continues running when the panel closes."}}
+    ],
+    "downloads":[
+      {"label":"macOS · Apple Silicon", "version":"0.1.2", "system":"macOS 14+ · arm64", "href":"https://github.com/leeeway/TokenPulse/releases/download/mac-v0.1.2/TokenPulse-macOS-arm64.zip"},
+      {"label":"Windows · x64", "version":"0.4.2", "system":"Windows 11 · x64", "href":"https://github.com/leeeway/TokenPulse/releases/download/windows-v0.4.2/TokenPulse-Windows-x64.zip"}
+    ],
+    "downloadNote":{"zh":"预览版本。Mac 包为本地 ad-hoc 签名，未做 Apple 公证；Windows 包未做发布者签名。请确认版本和系统要求，校验文件可在对应 Release 查看。Windows 多屏缩放与托盘交互仍需实机验收。","en":"Preview builds. The Mac app is ad-hoc signed and not notarized; the Windows package is not publisher-signed. Check system requirements and the checksums on each release. Windows mixed-DPI and tray interactions still need physical desktop validation."}
+  },
+  {
+    "id":"cardpulse", "name":"CardPulse", "featured":true, "accent":"blue", "symbol":"▤",
+    "repo":"https://github.com/leeeway/CardPulse",
+    "category":{"zh":"个人财务 · 本地处理","en":"Personal finance · Local processing"},
+    "headline":{"zh":"账单更有条理。\n每一笔，都看得清。","en":"Bring order to statements.\nSee every transaction."},
+    "summary":{"zh":"在浏览器或桌面整理信用卡账单，核对交易，并估算返现。","en":"Organize card statements, reconcile transactions and estimate cashback in a browser or desktop app."},
+    "body":{"zh":"从 PDF 或标准 CSV 中整理交易，再按商户、币种与收支筛选。支持结欠核对、自定义活动及本地加密保险库。网页版可直接用示例数据体验，无需准备真实账单。","en":"Organize transactions from supported PDFs or standard CSV, then filter by merchant, currency and direction. Includes balance checks, configurable reward campaigns and a local encrypted vault. Try the browser version with sample data."},
+    "tags":["React","PDF / CSV","Local vault"],
+    "image":"/projects/media/cardpulse-demo.png",
+    "imageAlt":{"zh":"CardPulse 网页版使用示例数据展示账单工作区","en":"CardPulse browser workspace displaying sample statement data"},
+    "imageNote":{"zh":"网页版 · 示例数据","en":"Browser app · Sample data"},
+    "primary":{"zh":"打开网页版","en":"Open browser app","href":"/apps/cardpulse/"},
+    "features":[
+      {"zh":"整理与核对","en":"Organize and reconcile","body":{"zh":"导入受支持的 HSBC PDF 或标准 CSV，筛选交易并核对结单结欠。","en":"Import supported HSBC PDFs or standard CSV, filter transactions and reconcile statement balances."}},
+      {"zh":"活动估算","en":"Estimate rewards","body":{"zh":"按渠道、日期、封顶与门槛配置活动；估算值需与银行条款核对。","en":"Configure campaign dates, channels, caps and thresholds. Estimates need checking against bank terms."}},
+      {"zh":"本地保险库","en":"Local encrypted vault","body":{"zh":"用主密码加密保存记录。网页版与桌面版的数据不会自动互通。","en":"Encrypt saved records with a master password. Browser and desktop data do not automatically sync."}},
+      {"zh":"先用示例体验","en":"Try sample data first","body":{"zh":"点击“查看示例数据”探索工作区，CSV 导出与交易说明可直接体验。","en":"Choose “View sample data” to explore the workspace, transaction explanations and CSV exports."}}
+    ],
+    "downloads":[
+      {"label":"macOS · Apple Silicon","version":"0.2.0","system":"macOS 13+ · arm64","href":"https://github.com/leeeway/CardPulse/releases/download/v0.2.0/CardPulse-0.2.0-mac-arm64.dmg"},
+      {"label":"macOS · Intel","version":"0.2.0","system":"macOS 13+ · x64","href":"https://github.com/leeeway/CardPulse/releases/download/v0.2.0/CardPulse-0.2.0-mac-x64.dmg"},
+      {"label":"Windows · x64","version":"0.2.0","system":"Windows 10 / 11 · x64","href":"https://github.com/leeeway/CardPulse/releases/download/v0.2.0/CardPulse-0.2.0-win-x64.exe"}
+    ],
+    "downloadNote":{"zh":"桌面版 v0.2.0。安装包尚未做发布者签名或 Apple 公证。网页版数据保存在当前浏览器与站点地址下，清除站点数据可能删除保险库，请先备份。仅在主动更新汇率时访问 Frankfurter，不发送账单内容。","en":"Desktop v0.2.0. Packages are not publisher-signed or Apple-notarized. Browser data is tied to this browser and origin; clearing site data may remove your vault. Back up first. Optional rate updates contact Frankfurter without sending statement content."}
+  },
+  {
+    "id":"daily-trend-radar", "name":"技术雷达", "featured":true, "accent":"mint", "symbol":"✳",
+    "repo":"https://github.com/leeeway/daily-trend-radar",
+    "category":{"zh":"技术阅读 · 日报与周报","en":"Developer reading · Daily and weekly"},
+    "headline":{"zh":"每天一点新发现。\n每周，一个新视角。","en":"A little discovery, daily.\nA wider perspective, weekly."},
+    "summary":{"zh":"开源项目、开发者热议与严重安全公告，汇成可订阅的技术雷达。","en":"Open-source projects, developer conversations and critical security advisories in a subscribable digest."},
+    "body":{"zh":"把分散的信息汇成一处，保留原始来源。阅读每日汇编，回顾每周归档，或者订阅 RSS，在自己的阅读工具里持续跟进。","en":"Bring scattered signals together while keeping original sources. Read daily briefs, browse weekly archives or follow along in your own RSS reader."},
+    "tags":["Python","GitHub Actions","RSS"],
+    "primary":{"zh":"阅读技术雷达","en":"Read Tech Radar","href":"https://leeeway.github.io/daily-trend-radar/"},
+    "features":[
+      {"zh":"开源观察","en":"Open-source signals","body":{"zh":"观察最近创建且获得关注的 GitHub 仓库，保留项目链接。","en":"Discover recently created GitHub repositories gaining attention, with links to the projects."}},
+      {"zh":"讨论与安全","en":"Conversations and security","body":{"zh":"汇集 Hacker News 热议与 GitHub 严重级别安全公告。","en":"Collects Hacker News conversations and critical GitHub security advisories."}},
+      {"zh":"日报与周报","en":"Daily and weekly archives","body":{"zh":"每日记录、按 ISO 周归档，方便回看一周的技术动态。","en":"Daily records and ISO-week archives make it easy to look back at the week's signals."}},
+      {"zh":"RSS 订阅","en":"Follow with RSS","body":{"zh":"通过标准 RSS 在自己的阅读工具里订阅，不需要账号。","en":"Subscribe through standard RSS in the reader you already use, without an account."}}
+    ],
+    "extra":{"label":{"zh":"订阅 RSS","en":"Subscribe with RSS"},"href":"https://leeeway.github.io/daily-trend-radar/feed.xml"}
+  },
+  {
+    "id":"logmind", "name":"LogMind", "featured":false, "accent":"peach", "symbol":"⌘",
+    "repo":"https://github.com/leeeway/LogMind",
+    "category":{"zh":"基础设施 · 智能日志分析","en":"Infrastructure · Intelligent log analysis"},
+    "headline":{"zh":"从异常日志，\n走向排查线索。","en":"From log anomalies\nto investigation leads."},
+    "summary":{"zh":"面向 Elasticsearch 与混合基础设施的日志分析、AI 排查与告警平台。","en":"Log analysis, AI-assisted investigation and alerts for Elasticsearch and hybrid infrastructure."},
+    "body":{"zh":"对接已有日志基础设施，结合可配置模型与多步查询辅助排查，并提供通知与去重能力。适合需要自行部署、配置数据源和模型服务的开发者与运维团队。","en":"Connect existing log infrastructure with configurable models and multi-step investigation, notifications and deduplication. For developers and operations teams managing their own data sources and deployment."},
+    "tags":["FastAPI","Elasticsearch","React"],
+    "primary":{"zh":"阅读部署文档","en":"Read deployment docs","href":"https://github.com/leeeway/LogMind#readme"},
+    "features":[
+      {"zh":"现有日志接入","en":"Connect existing logs","body":{"zh":"对接 Elasticsearch 与已有日志链路，支持多种索引方式。","en":"Works with Elasticsearch and existing log pipelines across different index layouts."}},
+      {"zh":"AI 辅助排查","en":"AI-assisted investigation","body":{"zh":"支持模型开关与多步查询，帮助缩小异常排查范围。","en":"Configurable models and multi-step queries help narrow an investigation."}},
+      {"zh":"通知与去重","en":"Notifications and deduplication","body":{"zh":"按业务线配置告警，将排查结果送到已有协作工具。","en":"Configure alerts by business line and deliver findings to existing collaboration tools."}},
+      {"zh":"自行部署","en":"Self-hosted deployment","body":{"zh":"需要服务器、数据源与访问控制；官网提供项目介绍和源码入口。","en":"Requires server infrastructure, data sources and access control. This site provides an overview and source links."}}
+    ]
+  }
+]

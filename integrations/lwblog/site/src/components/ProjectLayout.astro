@@ -1,0 +1,17 @@
+---
+import '@fontsource-variable/inter';
+import '../styles/parallax.css';
+import '../styles/projects.css';
+const { lang = 'zh', title, description, path = '/projects/' } = Astro.props;
+const zh = lang === 'zh';
+const prefix = zh ? '' : '/en';
+const otherPrefix = zh ? '/en' : '';
+---
+<!doctype html>
+<html lang={zh ? 'zh-CN' : 'en'}>
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content={description} /><meta name="theme-color" content="#fffefa" /><link rel="icon" href="/favicon.svg" /><link rel="canonical" href={`https://lwblog.cn${prefix}${path}`} /><link rel="alternate" hreflang="zh-CN" href={`https://lwblog.cn${path}`} /><link rel="alternate" hreflang="en" href={`https://lwblog.cn/en${path}`} /><meta property="og:title" content={`${title} — leeway`} /><meta property="og:description" content={description} /><meta property="og:type" content="website" /><meta property="og:url" content={`https://lwblog.cn${prefix}${path}`} /><title>{title} — leeway</title></head>
+  <body class="project-site"><a href="#main" class="skip-link">{zh ? '跳到内容' : 'Skip to content'}</a><header class="site-header"><nav class="nav-shell" aria-label={zh ? '主导航' : 'Main navigation'}><a class="brand" href={`${prefix}/`}>leeway<span>✳</span></a><div class="project-nav"><a href={`${prefix}/projects/`}>{zh ? '全部项目' : 'Projects'}</a><a href={`${prefix}/#radar`}>{zh ? '技术雷达' : 'Radar'}</a></div><a class="language" href={`${otherPrefix}${path}`} aria-label={zh ? 'Switch to English' : '切换到中文'}>{zh ? 'EN' : '中文'} <span aria-hidden="true">↗</span></a></nav></header>
+    <main id="main"><slot /></main>
+    <footer class="site-footer wrap"><a class="brand" href={`${prefix}/`}>leeway<span>✳</span></a><span>{zh ? '用心构建，持续打磨。' : 'Built thoughtfully. Refined continuously.'}</span><a href="https://github.com/leeeway" target="_blank" rel="noopener noreferrer">GitHub ↗</a></footer>
+  </body>
+</html>

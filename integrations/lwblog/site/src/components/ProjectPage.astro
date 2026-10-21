@@ -1,0 +1,19 @@
+---
+import ProjectLayout from './ProjectLayout.astro';
+const { lang = 'zh', project } = Astro.props;
+const zh = lang === 'zh';
+const prefix = zh ? '' : '/en';
+const name = project.id === 'daily-trend-radar' && !zh ? 'Tech Radar' : project.name;
+const isExternal = (url: string) => url.startsWith('https://');
+---
+<ProjectLayout lang={lang} title={name} description={project.summary[lang]} path={`/projects/${project.id}/`}>
+  <section class:list={['product-hero', 'wrap', `tone-${project.accent}`]}>
+    <div class="product-intro"><a class="project-back" href={`${prefix}/projects/`}>← {zh ? '全部项目' : 'All projects'}</a><p class="eyebrow">{project.category[lang]} · {name}</p><h1>{project.headline[lang].split('\n').map((line: string) => <span>{line}</span>)}</h1><p class="product-summary">{project.summary[lang]}</p><div class="product-actions"><a class="pill-button" href={project.primary.href} target={isExternal(project.primary.href) ? '_blank' : undefined} rel={isExternal(project.primary.href) ? 'noopener noreferrer' : undefined}>{project.primary[lang]} <span aria-hidden="true">↗</span></a><a class="source-link" href={project.repo} target="_blank" rel="noopener noreferrer">GitHub ↗</a></div><ul class="project-tags">{project.tags.map((tag: string) => <li>{tag}</li>)}</ul></div>
+    {project.image ? <figure class:list={['product-preview', { landscape: project.id === 'cardpulse' }]}><img src={project.image} alt={project.imageAlt[lang]} width={project.id === 'cardpulse' ? 1440 : 430} height={project.id === 'cardpulse' ? 1000 : 554} /><figcaption>{project.imageNote[lang]}</figcaption></figure>
+      : <div class="product-symbol-preview" aria-hidden="true"><span>{project.symbol}</span><strong>{name}</strong><p>{project.tags.join(' · ')}</p></div>}
+  </section>
+  <section class="product-story wrap"><p class="eyebrow">A CLOSER LOOK</p><h2>{zh ? '从一个问题，开始。' : 'Start with a real problem.'}</h2><p>{project.body[lang]}</p><div class="product-feature-grid">{project.features.map((feature: any, index: number) => <article><span class="feature-number">0{index + 1}</span><h3>{feature[lang]}</h3><p>{feature.body[lang]}</p></article>)}</div></section>
+  {project.downloads?.length > 0 && <section id="downloads" class="product-downloads wrap"><p class="eyebrow">MADE FOR YOUR DESKTOP</p><h2>{zh ? '选择适合你的版本。' : 'Choose your desktop build.'}</h2><div class="download-grid">{project.downloads.map((item: any) => <article><p>{item.label}</p><h3>v{item.version}</h3><span>{item.system}</span><a href={item.href}>{zh ? '下载' : 'Download'} {item.href.split('.').pop()?.toUpperCase()} <span aria-hidden="true">↓</span></a></article>)}</div><p class="download-note">{project.downloadNote[lang]}</p><a class="source-link" href={`${project.repo}/releases`} target="_blank" rel="noopener noreferrer">{zh ? '校验文件、更新说明与全部版本' : 'Checksums, release notes and all versions'} ↗</a></section>}
+  {project.extra && <section class="product-subscribe wrap"><h2>{zh ? '在自己的阅读工具里，持续跟进。' : 'Keep up in your own reader.'}</h2><a class="pill-button" href={project.extra.href}>{project.extra.label[lang]} <span aria-hidden="true">↗</span></a></section>}
+  <section class="product-next wrap"><a href={`${prefix}/projects/`}>← {zh ? '探索更多项目' : 'Explore more projects'}</a><a href={`${project.repo}/issues`} target="_blank" rel="noopener noreferrer">{zh ? '反馈与建议' : 'Issues and feedback'} ↗</a></section>
+</ProjectLayout>
