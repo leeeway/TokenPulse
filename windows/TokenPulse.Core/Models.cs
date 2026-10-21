@@ -84,10 +84,14 @@ internal sealed class UsageAccumulator
     }
     public UsageTotals Build() => new(input, write, read, output, reasoning, cost, saved, sessions.Count, events);
 }
-public sealed record ModelSummary(string Provider, string Model, UsageTotals Totals);
+public sealed record ModelSummary(string Provider, string Model, UsageTotals Totals)
+{
+    public DateTimeOffset? LastActivityAt { get; init; }
+}
 public sealed record ProviderSummary(string Provider, UsageTotals Totals, string[] TopModels, RateLimit? RateLimit)
 {
     public IReadOnlyList<ModelSummary> Models { get; init; } = [];
+    public DateTimeOffset? LastActivityAt { get; init; }
 }
 
 public sealed record DailyPoint(DateTime Date, long Upstream, long Output, double Cost)

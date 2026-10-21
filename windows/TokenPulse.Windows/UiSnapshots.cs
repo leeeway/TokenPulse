@@ -75,7 +75,9 @@ internal static class UiSnapshots
                 sources.Select(s => s.Provider == Providers.Claude ? s with { State = SourceState.Error, Path = @"C:\Users\示例用户\开发工作区\自定义会话与日志\Claude Code\projects", Message = "访问失败：需要检查目录权限" } : s).ToArray());
             window.Width = 420; window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, new([new("qwen-local", 8_000_000_000, 6_000_000_000)], "Ollama 已连接"));
             await ShowAndCapture(window, directory, "dashboard-narrow-multiple");
-            var modelToggle = Descendants<Button>(window).Single(b => Equals(b.Content, "查看 2 个模型  +"));
+            if (!Descendants<TextBlock>(window).Any(t => t.Text == "重置 " + now.AddHours(2).LocalDateTime.ToString("MM/dd HH:mm")))
+                throw new InvalidOperationException("Quota reset time is hidden from the card.");
+            var modelToggle = Descendants<Button>(window).Single(b => Equals(b.Content, "最近 2 个模型  +"));
             modelToggle.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             // The four-second refresh must not collapse details the user is reading.
             window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
@@ -131,6 +133,29 @@ internal static class UiSnapshots
                 || !Descendants<TextBlock>(window).Any(t => t.Text.Contains("1 项需检查")))
                 throw new InvalidOperationException("Uncertain usage or parser warnings are not displayed correctly.");
             await ShowAndCapture(window, directory, "dashboard-data-quality");
+            var compactEvents = Enumerable.Range(0, 5).Select(i => UsageEvent.Create("compact-" + i, Providers.Codex,
+                "compact-model-" + i, now.AddMinutes(-i), "compact", 1000 * (i + 1), 0, 0, 10)).Concat(new[]
+                {
+                    UsageEvent.Create("compact-claude", Providers.Claude, "sonnet", now.AddMinutes(-5), "claude", 900000, 0, 0, 0),
+                    UsageEvent.Create("compact-gemini", Providers.Antigravity, "gemini", now.AddMinutes(-6), "gemini", 800000, 0, 0, 0),
+                    UsageEvent.Create("compact-custom", Providers.Custom, "custom", now.AddMinutes(-7), "custom", 700000, 0, 0, 0),
+                    UsageEvent.Create("compact-cursor", "cursor", "cursor", now.AddMinutes(-8), "cursor", 600000, 0, 0, 0)
+                }).ToArray();
+            var compactScan = new ScanResult(compactEvents, [quota with { Primary = new(29, 300, null) }], sources);
+            window.SetSourcesExpanded(false);
+            window.Render(Aggregation.Build(compactScan, TimeWindow.Today, now), compactScan, models);
+            if (Descendants<Border>(window).Count(b => b.Name == "ProviderCard") != 3
+                || !Descendants<TextBlock>(window).Any(t => t.Text == "日志未提供重置时间"))
+                throw new InvalidOperationException("Compact product limit or unknown reset time failed.");
+            var compactDetails = Descendants<StackPanel>(window).First(p => p.Name == "ModelDetails");
+            if (compactDetails.Children.Count != 3
+                || Descendants<TextBlock>(compactDetails).Any(t => t.Text == "compact-model-3" || t.Text == "compact-model-4")
+                || !Descendants<TextBlock>(compactDetails).Any(t => t.Text == "compact-model-0"))
+                throw new InvalidOperationException("Compact models are not the latest three.");
+            if (compactDetails.Visibility != Visibility.Visible)
+                Descendants<Button>(window).Single(b => Equals(b.Content, "最近 3 个模型  +"))
+                    .RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            await ShowAndCapture(window, directory, "dashboard-latest-three");
             window.Render(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
             if (!Descendants<TextBlock>(window).Any(t => t.Text == "等待第一条用量记录")
                 || Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("0 条记录时间未知") && t.Visibility == Visibility.Visible))

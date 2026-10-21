@@ -434,6 +434,40 @@ await Test("Source diagnostics survive cache reuse and clear after completion or
     Check(recovered.Message.Contains("2 条用量记录") && !recovered.Message.Contains("损坏"), "truncated/recovered source retained warnings");
 }));
 
+await Test("Latest activity orders products and models without limiting totals or CSV", () => Sync(() =>
+{
+    var rows = Enumerable.Range(0, 5).Select(i => UsageEvent.Create("model-" + i, Providers.Codex, "model-" + i,
+        now.AddMinutes(-i), "session", (i + 1) * 1000, 0, 0, 10)).Concat(new[]
+        {
+            UsageEvent.Create("older-big", Providers.Claude, "old", now.AddHours(-1), "claude", 900000, 0, 0, 0),
+            UsageEvent.Create("unknown", Providers.Custom, "unknown", now.AddDays(3), "custom", 800000, 0, 0, 0) with { HasKnownTimestamp = false }
+        }).Reverse().ToArray();
+    var snapshot = Aggregation.Build(new(rows, [], []), TimeWindow.All, now, TimeZoneInfo.Utc);
+    Equal(UsageTotals.From(rows), snapshot.Totals);
+    Equal(Providers.Codex, snapshot.Providers[0].Provider); Equal(Providers.Claude, snapshot.Providers[1].Provider);
+    Check(snapshot.Providers[2].LastActivityAt is null, "file-time fallback won latest sort");
+    var codex = snapshot.Providers[0]; Equal(now, codex.LastActivityAt!.Value); Equal(5, codex.Models.Count);
+    Check(codex.TopModels.SequenceEqual(new[] { "model-0", "model-1", "model-2" }), "top model list is not recent first");
+    Check(codex.Models.Select(m => m.Model).SequenceEqual(Enumerable.Range(0, 5).Select(i => "model-" + i)), "model recency order failed");
+    using var writer = new StringWriter(); UsageCsv.Write(writer, snapshot, TimeWindow.All);
+    Check(writer.ToString().Contains("model-4") && writer.ToString().Contains("unknown"), "compact view dropped full export data");
+    var changed = rows.Append(UsageEvent.Create("update", Providers.Claude, "old", now.AddSeconds(1), "claude", 1, 0, 0, 0)).ToArray();
+    Equal(Providers.Claude, Aggregation.Build(new(changed, [], []), TimeWindow.All, now).Providers[0].Provider);
+}));
+await Test("Latest activity follows the selected period and deterministic ties", () => Sync(() =>
+{
+    var rows = new[]
+    {
+        UsageEvent.Create("old", Providers.Codex, "historic", now.AddDays(-1), "old", 900000, 0, 0, 0),
+        UsageEvent.Create("a", Providers.Codex, "a", now, "a", 1, 0, 0, 0),
+        UsageEvent.Create("b", Providers.Codex, "b", now, "b", 2, 0, 0, 0)
+    };
+    var today = Aggregation.Build(new(rows, [], []), TimeWindow.Today, now, TimeZoneInfo.Utc).Providers.Single();
+    Equal(2, today.Models.Count); Equal("b", today.Models[0].Model); Equal(now, today.Models[0].LastActivityAt!.Value);
+    var all = Aggregation.Build(new(rows, [], []), TimeWindow.All, now, TimeZoneInfo.Utc).Providers.Single();
+    Equal("historic", all.Models.Last().Model); Equal(now.AddDays(-1), all.Models.Last().LastActivityAt!.Value);
+}));
+
 Console.WriteLine($"{passed} passed, {failures} failed.");
 return failures == 0 ? 0 : 1;
 

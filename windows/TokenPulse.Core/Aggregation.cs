@@ -14,6 +14,7 @@ public static class Aggregation
         var daily = Enumerable.Range(0, 7).Select(_ => new UsageAccumulator()).ToArray();
         var providers = new Dictionary<string, UsageAccumulator>();
         var models = new Dictionary<(string Provider, string Model), UsageAccumulator>();
+        var lastActivity = new Dictionary<(string Provider, string Model), DateTimeOffset>();
         var trendStart = today.AddDays(-6);
         var recentStart = now.AddMinutes(-5);
         var recentEnd = now.AddSeconds(60);
@@ -42,16 +43,21 @@ public static class Aggregation
             var key = (e.Provider, e.Model);
             if (!models.TryGetValue(key, out var model)) models[key] = model = new();
             model.Add(e);
+            if (e.HasKnownTimestamp && (!lastActivity.TryGetValue(key, out var last) || e.Timestamp > last))
+                lastActivity[key] = e.Timestamp;
         }
         var limits = scan.RateLimits.GroupBy(r => r.Provider).ToDictionary(g => g.Key, g => g.MaxBy(r => r.UpdatedAt)!);
-        var byProvider = models.Select(pair => new ModelSummary(pair.Key.Provider, pair.Key.Model, pair.Value.Build()))
-            .GroupBy(m => m.Provider).ToDictionary(g => g.Key, g => g.OrderByDescending(m => m.Totals.Total).ThenBy(m => m.Model, StringComparer.Ordinal).ToArray());
+        var byProvider = models.Select(pair => new ModelSummary(pair.Key.Provider, pair.Key.Model, pair.Value.Build())
+            { LastActivityAt = lastActivity.TryGetValue(pair.Key, out var time) ? time : null })
+            .GroupBy(m => m.Provider).ToDictionary(g => g.Key, g => g.OrderByDescending(m => m.LastActivityAt)
+                .ThenByDescending(m => m.Totals.Total).ThenBy(m => m.Model, StringComparer.Ordinal).ToArray());
         var summaries = providers.Keys.Concat(limits.Keys).Distinct().Select(p =>
         {
             var detail = byProvider.GetValueOrDefault(p) ?? [];
             return new ProviderSummary(p, providers.GetValueOrDefault(p)?.Build() ?? new UsageAccumulator().Build(),
-                detail.Take(3).Select(m => m.Model).ToArray(), limits.GetValueOrDefault(p)) { Models = detail };
-        }).OrderByDescending(p => p.Totals.Total).ThenBy(p => Providers.Name(p.Provider)).ToArray();
+                detail.Take(3).Select(m => m.Model).ToArray(), limits.GetValueOrDefault(p))
+                { Models = detail, LastActivityAt = detail.FirstOrDefault()?.LastActivityAt };
+        }).OrderByDescending(p => p.LastActivityAt).ThenByDescending(p => p.Totals.Total).ThenBy(p => Providers.Name(p.Provider)).ToArray();
         cancellationToken.ThrowIfCancellationRequested();
         var trend = daily.Select((accumulator, index) =>
         {

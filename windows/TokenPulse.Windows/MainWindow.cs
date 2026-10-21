@@ -179,7 +179,8 @@ internal sealed class MainWindow : Window
         var thresholds = snapshot.AlertThresholds;
         alertBox.ToolTip = "高消耗阈值：Token " + (thresholds.Tokens == 0 ? "已关闭" : thresholds.Tokens.ToString("N0"))
             + " · 费用 " + (thresholds.USD == 0 ? "已关闭" : Formatting.Usd(thresholds.USD)) + "；可在运行偏好中修改。";
-        providerCount.Text = $"{snapshot.Providers.Count} 个来源";
+        providerCount.Text = snapshot.Providers.Count > 3 ? $"最近 3 / {snapshot.Providers.Count} 个来源" : $"{snapshot.Providers.Count} 个来源";
+        providerCount.ToolTip = "按当前周期最近活跃时间排序，最多展示 3 个来源；汇总和 CSV 包含全部来源与模型。";
         var allDisabled = scan.Statuses.Count > 0 && scan.Statuses.All(s => s.State == SourceState.Disabled);
         // Keep interactive rows (and keyboard focus) intact on unchanged timer ticks.
         if (!SameProviders(snapshot.Providers, snapshot.GeneratedAt) || allDisabled != renderedAllDisabled || hasUnknownUsage != renderedHasUnknownUsage)
@@ -198,7 +199,7 @@ internal sealed class MainWindow : Window
                 }
                 providerRows.Children.Add(Ui.Card(empty));
             }
-            foreach (var provider in snapshot.Providers) providerRows.Children.Add(ProviderCard(provider, snapshot.GeneratedAt));
+            foreach (var provider in snapshot.Providers.Take(3)) providerRows.Children.Add(ProviderCard(provider, snapshot.GeneratedAt));
             renderedProviders = snapshot.Providers; providersRenderedAt = snapshot.GeneratedAt; renderedAllDisabled = allDisabled; renderedHasUnknownUsage = hasUnknownUsage;
         }
         RenderTrend(snapshot.Trend); localModelRows.Children.Clear(); localModelCard.Visibility = ollama.Models.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -225,7 +226,7 @@ internal sealed class MainWindow : Window
         return renderedProviders.Zip(providers).All(pair =>
         {
             var (old, current) = pair;
-            return old.Provider == current.Provider && old.Totals == current.Totals && old.RateLimit == current.RateLimit
+            return old.Provider == current.Provider && old.Totals == current.Totals && old.RateLimit == current.RateLimit && old.LastActivityAt == current.LastActivityAt
                 && old.TopModels.SequenceEqual(current.TopModels) && old.Models.SequenceEqual(current.Models)
                 && (current.RateLimit?.Primary.IsExpired(now) ?? false) == (old.RateLimit?.Primary.IsExpired(providersRenderedAt) ?? false)
                 && (current.RateLimit?.Secondary?.IsExpired(now) ?? false) == (old.RateLimit?.Secondary?.IsExpired(providersRenderedAt) ?? false);
@@ -245,6 +246,7 @@ internal sealed class MainWindow : Window
         identity.Children.Add(model); Ui.Put(header, identity, 1);
         var values = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right }; values.Children.Add(Ui.Text(Formatting.Tokens(provider.Totals.Total), 16, Ui.Ink, FontWeights.SemiBold));
         var price = Ui.Text(Formatting.Usd(provider.Totals.Cost), 10, Ui.Muted); price.HorizontalAlignment = HorizontalAlignment.Right; price.Margin = new Thickness(0, 2, 0, 0); values.Children.Add(price); Ui.Put(header, values, 2); panel.Children.Add(header);
+        header.ToolTip = provider.LastActivityAt is { } active ? $"最近活跃 {active.LocalDateTime:yyyy-MM-dd HH:mm:ss}" : "日志没有提供可确认的用量时间";
         Ui.Gap(panel, 8); panel.Children.Add(Ui.Text($"↑ {Formatting.Tokens(provider.Totals.Upstream)}     ↓ {Formatting.Tokens(provider.Totals.Output)}     缓存 {provider.Totals.CacheHitRatio:P1}", 10.5, Ui.Muted));
         if (provider.RateLimit is { } quota)
         {
@@ -255,22 +257,28 @@ internal sealed class MainWindow : Window
         {
             var details = new StackPanel { Name = "ModelDetails", Margin = new Thickness(0, 6, 0, 0),
                 Visibility = expandedProviders.Contains(provider.Provider) ? Visibility.Visible : Visibility.Collapsed };
-            foreach (var summary in provider.Models)
+            foreach (var summary in provider.Models.Take(3))
             {
                 var row = new StackPanel { Margin = new Thickness(0, 7, 0, 7) };
                 row.ToolTip = $"输入 {summary.Totals.Input:N0} · 缓存写入 {summary.Totals.CacheWrite:N0} · 缓存读取 {summary.Totals.CacheRead:N0}\n输出 {summary.Totals.Output:N0} · 推理 {summary.Totals.Reasoning:N0}（已含于输出）\n{summary.Totals.Sessions} 会话 · {summary.Totals.Events} 条记录";
+                var nameRow = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto);
                 var name = Ui.Text(summary.Model, 10.5, Ui.Ink, FontWeights.SemiBold);
-                name.ToolTip = summary.Model; row.Children.Add(name);
+                name.TextWrapping = TextWrapping.NoWrap; name.TextTrimming = TextTrimming.CharacterEllipsis; name.Margin = new Thickness(0, 0, 8, 0);
+                name.ToolTip = summary.Model; Ui.Put(nameRow, name, 0);
+                var activity = Ui.Text(summary.LastActivityAt is { } time ? time.LocalDateTime.ToString("MM/dd HH:mm") : "时间未知", 9.5, Ui.Muted);
+                activity.ToolTip = summary.LastActivityAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+                Ui.Put(nameRow, activity, 1); row.Children.Add(nameRow);
                 var detail = Ui.Text($"{Formatting.Tokens(summary.Totals.Total)} Token  ·  {Formatting.Usd(summary.Totals.Cost)}  ·  缓存 {summary.Totals.CacheHitRatio:P1}", 10, Ui.Muted);
                 detail.Margin = new Thickness(0, 4, 0, 0); row.Children.Add(detail); details.Children.Add(row);
             }
             var toggle = Ui.Button("", () => { });
             void UpdateToggle()
             {
-                toggle.Content = (details.Visibility == Visibility.Visible ? "收起模型明细" : $"查看 {provider.Models.Count} 个模型") + (details.Visibility == Visibility.Visible ? "  −" : "  +");
+                toggle.Content = (details.Visibility == Visibility.Visible ? "收起模型明细" : $"最近 {Math.Min(3, provider.Models.Count)} 个模型") + (details.Visibility == Visibility.Visible ? "  −" : "  +");
             }
             toggle.HorizontalAlignment = HorizontalAlignment.Left; toggle.Padding = new Thickness(0, 5, 6, 5);
             toggle.Background = Brushes.Transparent; toggle.Margin = new Thickness(0, 6, 0, 0);
+            toggle.ToolTip = provider.Models.Count > 3 ? $"当前周期共 {provider.Models.Count} 个模型，只展示最近 3 个；完整明细可导出 CSV。" : "按当前周期最近活跃时间排序。";
             UpdateToggle();
             toggle.Click += (_, _) =>
             {
@@ -280,7 +288,7 @@ internal sealed class MainWindow : Window
             };
             panel.Children.Add(toggle); panel.Children.Add(details);
         }
-        var card = Ui.Card(panel, new Thickness(12)); card.Margin = new Thickness(0, 0, 0, 8); return card;
+        var card = Ui.Card(panel, new Thickness(12)); card.Name = "ProviderCard"; card.Margin = new Thickness(0, 0, 0, 8); return card;
     }
     private static void AddQuota(Panel panel, QuotaWindow quota, DateTimeOffset now)
     {
@@ -295,6 +303,11 @@ internal sealed class MainWindow : Window
         track.ToolTip = (quota.ResetsAt is { } reset ? $"重置于 {reset.LocalDateTime:g}" : "日志未提供重置时间") +
             (expired ? $"；上次记录已用 {quota.UsedPercent:F1}%，等待新的日志确认" : "");
         panel.Children.Add(track);
+        var resetText = Ui.Text(quota.ResetsAt is { } resetAt
+            ? (expired ? "上次重置 " : "重置 ") + resetAt.LocalDateTime.ToString(resetAt.LocalDateTime.Year == now.LocalDateTime.Year ? "MM/dd HH:mm" : "yyyy/MM/dd HH:mm")
+            : "日志未提供重置时间", 9.5, Ui.Muted);
+        resetText.Margin = new Thickness(0, 4, 0, 0); resetText.ToolTip = track.ToolTip;
+        panel.Children.Add(resetText);
     }
     private async Task ExportAsync()
     {

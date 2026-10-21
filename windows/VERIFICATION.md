@@ -2,6 +2,12 @@
 
 Status recorded on 2026-10-20. Host: macOS arm64. SDK used for C#: .NET 10.0.402 installed temporarily outside the repository.
 
+## 2026-10-21 compact details: Windows 0.4.2
+
+- Quota cards show local reset date/time directly, with explicit missing-time and expired-record labels. Quota availability and reset time are never inferred.
+- Product cards and their model details are ordered by the latest reliable usage timestamp within the selected period and display at most three items each. Unknown timestamps sort last; equal times use totals and names for deterministic ordering. Full aggregates and CSV retain every source/model.
+- Added regression coverage for out-of-order events, low-volume recent activity preceding older high-volume usage, unknown dates, period changes, ties and uncapped CSV. WPF checks cover the visible reset label, missing reset, three-card/three-model limits, and the actual compact view. Desktop Windows 11 mixed-DPI/tray behavior remains subject to the manual checklist.
+
 ## 2026-10-21 fixes: Windows 0.4.1
 
 - Confirmed that appending unrelated content to an undated log moved 300,000 historical tokens into today's totals and triggered the five-minute alert. Native events now carry internal timestamp reliability metadata. Unknown-time usage is retained only in All totals/model summaries/export; calendar windows, trend and burn alerts exclude it, including after append, cache reuse and restart. The dashboard and source details explain the exclusion. The custom JSONL contract is unchanged.
