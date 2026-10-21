@@ -157,7 +157,10 @@ internal sealed class MainWindow : Window
         exportButton.IsEnabled = !exporting;
         var t = snapshot.Totals;
         tokens.Text = Formatting.Tokens(t.Total); cache.Text = t.CacheHitRatio.ToString("P1"); cost.Text = Formatting.Usd(t.Cost);
-        sessions.Text = $"{t.Sessions} 会话 · {t.Events} 步"; sessions.ToolTip = sessions.Text;
+        sessions.Text = $"{t.Sessions} 会话 · {t.Events} 步";
+        if (snapshot.UnknownTimestampEvents > 0) sessions.Text += $" · {snapshot.UnknownTimestampEvents} 条时间未知";
+        sessions.ToolTip = snapshot.UnknownTimestampEvents > 0
+            ? "时间未知的记录仅计入「全部」，不参与今日、7 天、30 天、趋势和高消耗提醒。" : sessions.Text;
         saved.Text = $"已省 {Formatting.Usd(t.Saved)}"; saved.ToolTip = $"缓存读取节省的估算费用：{Formatting.Usd(t.Saved)}";
         upstream.Text = $"↑ 上行 {Formatting.Tokens(t.Upstream)}"; downstream.Text = $"↓ 下行 {Formatting.Tokens(t.Output)}";
         flowDetail.Text = $"缓存读取 {Formatting.Tokens(t.CacheRead)}  ·  推理 {Formatting.Tokens(t.Reasoning)}";
@@ -190,7 +193,8 @@ internal sealed class MainWindow : Window
         }
         RenderTrend(snapshot.Trend); localModelRows.Children.Clear(); localModelCard.Visibility = ollama.Models.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         foreach (var model in ollama.Models) localModelRows.Children.Add(Ui.Text($"{model.Name}  ·  显存 {model.VramBytes / 1073741824.0:F1} GiB", 11, Ui.Muted));
-        var ready = scan.Statuses.Count(s => s.State == SourceState.Ready && s.Message != "未发现日志"); var errors = scan.Statuses.Count(s => s.State == SourceState.Error);
+        var ready = scan.Statuses.Count(s => (s.State is SourceState.Ready or SourceState.Warning) && s.Message != "未发现日志");
+        var errors = scan.Statuses.Count(s => s.State is SourceState.Error or SourceState.Warning);
         var disabled = scan.Statuses.Count(s => s.State == SourceState.Disabled);
         sourceTitle.Text = allDisabled ? $"数据源  ·  {disabled} 已关闭" : $"数据源  ·  {ready}/{scan.Statuses.Count - disabled} 已连接" +
             (disabled > 0 ? $"  ·  {disabled} 已关闭" : "") + (errors > 0 ? $"  ·  {errors} 项需检查" : "");
@@ -198,7 +202,7 @@ internal sealed class MainWindow : Window
         sourceRows.Children.Clear();
         foreach (var source in scan.Statuses)
         {
-            var row = new StackPanel { Margin = new Thickness(3, 0, 0, 12) }; row.Children.Add(Ui.Text($"{Providers.Name(source.Provider)} · {source.Message}", 10.5, source.State == SourceState.Error ? Ui.Amber : Ui.Muted));
+            var row = new StackPanel { Margin = new Thickness(3, 0, 0, 12) }; row.Children.Add(Ui.Text($"{Providers.Name(source.Provider)} · {source.Message}", 10.5, source.State is SourceState.Error or SourceState.Warning ? Ui.Amber : Ui.Muted));
             var path = Ui.Text(source.Path, 10, Ui.Muted); path.Margin = new Thickness(0, 3, 0, 0); row.Children.Add(path); sourceRows.Children.Add(row);
         }
         sourceRows.Children.Add(Ui.Text(ollama.Status, 10.5, Ui.Muted)); updated.Text = $"更新于 {snapshot.GeneratedAt.LocalDateTime:HH:mm:ss}";

@@ -365,6 +365,75 @@ await Test("Legacy settings retain defaults and new preferences persist together
     Check(store.Load().Warning is not null, "corrupt thresholds should be visible");
 }));
 
+await Test("Unknown timestamps never move into calendar totals or burn alerts after append or restart", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    Directory.CreateDirectory(folder.Settings.ClaudeDirectory);
+    var path = Path.Combine(folder.Settings.ClaudeDirectory, "undated.jsonl");
+    File.WriteAllText(path, "{\"message\":{\"usage\":{\"input_tokens\":300000}}}\n");
+    File.SetLastWriteTimeUtc(path, now.AddDays(-1).UtcDateTime);
+    var scanner = new LogScanner();
+    void Verify(ScanResult scan)
+    {
+        Check(!scan.Events.Single().HasKnownTimestamp, "unknown timestamp marked reliable");
+        Equal(SourceState.Warning, scan.Statuses.Single(s => s.Provider == Providers.Claude).State);
+        foreach (var period in Enum.GetValues<TimeWindow>())
+        {
+            var snapshot = Aggregation.Build(scan, period, now, TimeZoneInfo.Utc);
+            Equal(period == TimeWindow.All ? 300000L : 0L, snapshot.Totals.Total);
+            Equal(1, snapshot.UnknownTimestampEvents); Equal(0L, snapshot.Recent.Total);
+            Equal(0L, snapshot.Trend.Sum(p => p.Total)); Check(!snapshot.IsHighBurnRate, "unknown date triggered burn alert");
+        }
+    }
+    Verify(scanner.Scan(folder.Settings));
+    File.AppendAllText(path, "{}\n"); File.SetLastWriteTimeUtc(path, now.UtcDateTime);
+    Verify(scanner.Scan(folder.Settings)); Verify(scanner.Scan(folder.Settings)); Verify(new LogScanner().Scan(folder.Settings));
+}));
+await Test("All native parsers mark missing and invalid dates without changing the custom contract", () => Sync(() =>
+{
+    (string Provider, string Line)[] cases =
+    [ (Providers.Claude, """{"timestamp":"invalid","message":{"usage":{"input_tokens":3}}}"""),
+      (Providers.Codex, """{"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3}}}}"""),
+      (Providers.Antigravity, """{"created_at":"invalid","input_tokens":3}""") ];
+    foreach (var (provider, line) in cases)
+    {
+        var e = Parse(provider, line).Events.Single(); Check(!e.HasKnownTimestamp, provider + " missed unknown date");
+        Equal(0L, Aggregation.Build(new([e], [], []), TimeWindow.Today, now).Totals.Total);
+        Equal(3L, Aggregation.Build(new([e], [], []), TimeWindow.All, now).Totals.Total);
+    }
+    var custom = Parse(Providers.Custom, Fixture("custom")).Events.Single();
+    Check(custom.HasKnownTimestamp, "custom timestamp lost");
+    Check(!JsonSerializer.Serialize(custom).Contains("HasKnownTimestamp"), "internal timestamp metadata leaked into serialized contract");
+    Check(Parse(Providers.Claude, Fixture("claude")).Events.All(e => e.HasKnownTimestamp), "dated fixture changed");
+}));
+await Test("JSON diagnostics distinguish damaged lines, incomplete EOF objects and unrelated valid JSON", () => Sync(() =>
+{
+    var parsed = Parse(Providers.Claude, "broken\n{invalid}\n{}\n[]\n\n{\"message\":");
+    Equal(2, parsed.MalformedLines); Equal(1, parsed.PendingLines); Equal(0, parsed.Events.Count);
+    foreach (var tail in new[] { "{", "{\"message\"", "{\"message\":{\"usage\":", "{\"value\":\"unfinished" })
+    { var p = Parse(Providers.Claude, tail); Equal(1, p.PendingLines); Equal(0, p.MalformedLines); }
+    foreach (var tail in new[] { "broken", "{invalid}", "{}{}", "{\"a\":!}" })
+    { var p = Parse(Providers.Claude, tail); Equal(0, p.PendingLines); Equal(1, p.MalformedLines); }
+    var middle = Parse(Providers.Claude, "{\"message\":\n{}\n");
+    Equal(1, middle.MalformedLines); Equal(0, middle.PendingLines);
+}));
+await Test("Source diagnostics survive cache reuse and clear after completion or truncation", () => Sync(() =>
+{
+    using var folder = new TestDirectory(); Directory.CreateDirectory(folder.Settings.ClaudeDirectory);
+    var path = Path.Combine(folder.Settings.ClaudeDirectory, "diagnostics.jsonl");
+    File.WriteAllText(path, "broken\n{\"message\":");
+    var scanner = new LogScanner();
+    SourceStatus Status() => scanner.Scan(folder.Settings).Statuses.Single(s => s.Provider == Providers.Claude);
+    var first = Status(); Equal(SourceState.Warning, first.State);
+    Check(first.Message.Contains("0 条用量记录") && first.Message.Contains("1 行 JSON 损坏") && first.Message.Contains("1 个末行"), "missing diagnostic counts");
+    Equal(first, Status());
+    File.AppendAllText(path, "{}}\n");
+    Check(!Status().Message.Contains("末行"), "completed object still pending");
+    File.WriteAllText(path, Fixture("claude"));
+    var recovered = Status(); Equal(SourceState.Ready, recovered.State);
+    Check(recovered.Message.Contains("2 条用量记录") && !recovered.Message.Contains("损坏"), "truncated/recovered source retained warnings");
+}));
+
 Console.WriteLine($"{passed} passed, {failures} failed.");
 return failures == 0 ? 0 : 1;
 

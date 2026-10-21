@@ -17,16 +17,25 @@ public static class Aggregation
         var trendStart = today.AddDays(-6);
         var recentStart = now.AddMinutes(-5);
         var recentEnd = now.AddSeconds(60);
+        var unknownTimestampEvents = 0;
         // Convert each timestamp once. Preserve local calendar semantics across DST,
         // including the existing handling of future-dated log entries.
         foreach (var e in scan.Events)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var date = TimeZoneInfo.ConvertTime(e.Timestamp, zone).Date;
-            var dayIndex = (date - trendStart).Days;
-            if (dayIndex is >= 0 and < 7) daily[dayIndex].Add(e);
-            if (e.Timestamp >= recentStart && e.Timestamp <= recentEnd) recent.Add(e);
-            if (window != TimeWindow.All && date < start) continue;
+            if (!e.HasKnownTimestamp)
+            {
+                unknownTimestampEvents++;
+                if (window != TimeWindow.All) continue;
+            }
+            else
+            {
+                var date = TimeZoneInfo.ConvertTime(e.Timestamp, zone).Date;
+                var dayIndex = (date - trendStart).Days;
+                if (dayIndex is >= 0 and < 7) daily[dayIndex].Add(e);
+                if (e.Timestamp >= recentStart && e.Timestamp <= recentEnd) recent.Add(e);
+                if (window != TimeWindow.All && date < start) continue;
+            }
             totals.Add(e);
             if (!providers.TryGetValue(e.Provider, out var provider)) providers[e.Provider] = provider = new();
             provider.Add(e);
@@ -49,6 +58,6 @@ public static class Aggregation
             var total = accumulator.Build();
             return new DailyPoint(today.AddDays(index - 6), total.Upstream, total.Output, total.Cost);
         }).ToArray();
-        return new(now, totals.Build(), summaries, trend, recent.Build());
+        return new(now, totals.Build(), summaries, trend, recent.Build()) { UnknownTimestampEvents = unknownTimestampEvents };
     }
 }

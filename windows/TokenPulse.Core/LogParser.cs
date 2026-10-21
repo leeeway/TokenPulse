@@ -23,6 +23,8 @@ public static class LogParser
         var model = "gpt-5-codex";
         long previousInput = 0, previousWrite = 0, previousRead = 0, previousOutput = 0, previousReasoning = 0;
         var index = 0;
+        var malformedLines = 0;
+        var pendingLines = 0;
         while (reader.ReadLine() is { } line)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -40,7 +42,8 @@ public static class LogParser
                     var id = Text(message, "id") ?? Text(root, "uuid") ?? $"{sessionId}-{index}";
                     item = UsageEvent.Create($"claude-{sessionId}-{id}-{index}", provider, Text(message, "model") ?? "claude-sonnet",
                         Date(Text(root, "timestamp")) ?? fallbackDate, sessionId, Number(usage, "input_tokens"),
-                        Number(usage, "cache_creation_input_tokens"), Number(usage, "cache_read_input_tokens"), Number(usage, "output_tokens"));
+                        Number(usage, "cache_creation_input_tokens"), Number(usage, "cache_read_input_tokens"), Number(usage, "output_tokens"))
+                        with { HasKnownTimestamp = Date(Text(root, "timestamp")) is not null };
                 }
                 else if (provider == Providers.Codex)
                 {
@@ -82,14 +85,16 @@ public static class LogParser
                     var output = Delta("output_tokens", ref previousOutput);
                     var reasoning = Delta("reasoning_output_tokens", ref previousReasoning);
                     item = UsageEvent.Create($"codex-{sessionId}-{index}", provider, model, timestamp, sessionId,
-                        Math.Max(0, raw - read - write), write, read, output, reasoning);
+                        Math.Max(0, raw - read - write), write, read, output, reasoning)
+                        with { HasKnownTimestamp = Date(Text(root, "timestamp")) is not null };
                 }
                 else if (provider == Providers.Antigravity)
                 {
                     var step = Field(root, "step_index").ValueKind == JsonValueKind.Number ? Number(root, "step_index") : index;
                     item = UsageEvent.Create($"agy-{sessionId}-{step}", provider, "gemini-antigravity",
                         Date(Text(root, "created_at")) ?? fallbackDate, sessionId, Number(root, "input_tokens"), 0,
-                        Number(root, "cache_read_tokens"), Number(root, "output_tokens"));
+                        Number(root, "cache_read_tokens"), Number(root, "output_tokens"))
+                        with { HasKnownTimestamp = Date(Text(root, "created_at")) is not null };
                 }
                 else if (provider == Providers.Custom)
                 {
@@ -107,8 +112,29 @@ public static class LogParser
                 }
                 if (item is not null && (provider == Providers.Custom || item.TotalTokens > 0)) events.Add(item);
             }
-            catch (JsonException) { /* A writer may still be appending the final JSON line. Retry on file change. */ }
+            catch (JsonException)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                // Only a syntactically valid, incomplete object at EOF may still be being written.
+                if (reader.Peek() == -1 && IsIncompleteObject(line)) pendingLines++;
+                else malformedLines++;
+            }
         }
-        return new(events, latest);
+        return new(events, latest) { MalformedLines = malformedLines, PendingLines = pendingLines };
+    }
+
+    private static bool IsIncompleteObject(string line)
+    {
+        if (!line.AsSpan().TrimStart().StartsWith("{")) return false;
+        var bytes = System.Text.Encoding.UTF8.GetBytes(line);
+        try
+        {
+            var reader = new Utf8JsonReader(bytes, isFinalBlock: false, state: default);
+            var rootComplete = false;
+            while (reader.Read())
+                if (reader.TokenType == JsonTokenType.EndObject && reader.CurrentDepth == 0) rootComplete = true;
+            return !rootComplete;
+        }
+        catch (JsonException) { return false; }
     }
 }

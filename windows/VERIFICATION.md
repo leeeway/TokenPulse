@@ -2,6 +2,14 @@
 
 Status recorded on 2026-10-20. Host: macOS arm64. SDK used for C#: .NET 10.0.402 installed temporarily outside the repository.
 
+## 2026-10-21 fixes: Windows 0.4.1
+
+- Confirmed that appending unrelated content to an undated log moved 300,000 historical tokens into today's totals and triggered the five-minute alert. Native events now carry internal timestamp reliability metadata. Unknown-time usage is retained only in All totals/model summaries/export; calendar windows, trend and burn alerts exclude it, including after append, cache reuse and restart. The dashboard and source details explain the exclusion. The custom JSONL contract is unchanged.
+- Confirmed that wholly malformed JSONL appeared as successfully read with zero usage. Parsed-file diagnostics now survive caching and report damaged JSON separately from a syntactically incomplete final object. Source details report file/usage counts, skipped malformed lines and pending final lines. Valid unrelated JSON is not classified as corruption; diagnostics do not claim full third-party schema validation.
+- Added four regression groups covering all native providers, valid/invalid timestamps, every period, append/restart, serialization compatibility, incomplete JSON prefixes, cache reuse, completion and truncation. Added a WPF data-quality scenario with warning text and suppressed-alert assertions.
+- Local core tests: **30 passed**. Existing Mac tests: **3 passed**; Mac Release packaging and code-signature verification passed without changing Mac sources or packaging scripts. The local Mac bundle was rebuilt and restarted separately; Windows 0.4.1 remains a Windows-only executable.
+- Final WPF cross-compilation and Windows CI/runtime checks are recorded in the delivery message. Physical Windows 11 mixed-DPI/tray validation remains subject to the manual checklist.
+
 ## 2026-10-21 evolution: Windows 0.4.0
 
 - Added independent persistent switches for the four log sources. Disabled sources are not accessed, are excluded from statistics, and have their cached parses evicted. Re-enabling reparses history. Status distinguishes disabled from missing/error; the empty dashboard links directly to settings.

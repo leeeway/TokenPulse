@@ -120,6 +120,16 @@ internal static class UiSnapshots
             await ShowAndCapture(window, directory, "dashboard-alerts-disabled");
             window.SetDataPending();
             if (export.IsEnabled) throw new InvalidOperationException("Settings change left stale export enabled.");
+            var uncertain = new ScanResult([today with { HasKnownTimestamp = false }], [],
+                [new(Providers.Codex, sources[0].Path, SourceState.Warning,
+                    "已读取 1 个文件 · 1 条用量记录 · 2 行 JSON 损坏，已跳过 · 1 个末行疑似未写完，等待追加 · 1 条时间未知，仅计入全部用量")]);
+            window.SetSourcesExpanded(true);
+            window.Render(Aggregation.Build(uncertain, TimeWindow.Today, now), uncertain, models);
+            if (Descendants<Border>(window).Single(b => b.Name == "HighBurnAlert").Visibility != Visibility.Collapsed
+                || !Descendants<TextBlock>(window).Any(t => t.Text.Contains("1 条时间未知"))
+                || !Descendants<TextBlock>(window).Any(t => t.Text.Contains("1 项需检查")))
+                throw new InvalidOperationException("Uncertain usage or parser warnings are not displayed correctly.");
+            await ShowAndCapture(window, directory, "dashboard-data-quality");
         }
         finally { window.AllowClose = true; window.Close(); }
         Settings? saved = null;

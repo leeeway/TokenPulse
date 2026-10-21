@@ -19,6 +19,9 @@ public sealed record UsageEvent(string Id, string Provider, string Model, DateTi
     string SessionId, long InputTokens, long CacheWriteTokens, long CacheReadTokens,
     long OutputTokens, long ReasoningTokens, double CostUSD, double SavedByCacheUSD)
 {
+    // File modification time is only a parser fallback, never evidence of when usage occurred.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool HasKnownTimestamp { get; init; } = true;
     public long UpstreamTokens => InputTokens + CacheWriteTokens + CacheReadTokens;
     public long TotalTokens => UpstreamTokens + OutputTokens;
 
@@ -38,8 +41,12 @@ public sealed record QuotaWindow(double UsedPercent, int? WindowMinutes, DateTim
 }
 public sealed record RateLimit(string Provider, string? PlanType, QuotaWindow Primary,
     QuotaWindow? Secondary, DateTimeOffset UpdatedAt);
-public sealed record ParsedLog(IReadOnlyList<UsageEvent> Events, RateLimit? RateLimit = null);
-public enum SourceState { Ready, Missing, Error, Disabled }
+public sealed record ParsedLog(IReadOnlyList<UsageEvent> Events, RateLimit? RateLimit = null)
+{
+    public int MalformedLines { get; init; }
+    public int PendingLines { get; init; }
+}
+public enum SourceState { Ready, Missing, Error, Disabled, Warning }
 public sealed record SourceStatus(string Provider, string Path, SourceState State, string Message);
 public sealed record ScanResult(IReadOnlyList<UsageEvent> Events, IReadOnlyList<RateLimit> RateLimits,
     IReadOnlyList<SourceStatus> Statuses);
@@ -91,6 +98,7 @@ public sealed record DashboardSnapshot(DateTimeOffset GeneratedAt, UsageTotals T
     IReadOnlyList<ProviderSummary> Providers, IReadOnlyList<DailyPoint> Trend, UsageTotals Recent)
 {
     public BurnRateThresholds AlertThresholds { get; init; } = new();
+    public int UnknownTimestampEvents { get; init; }
     public bool IsHighBurnRate => AlertThresholds.IsExceeded(Recent);
 }
 

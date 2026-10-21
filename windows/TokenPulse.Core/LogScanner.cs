@@ -25,6 +25,10 @@ public sealed class LogScanner
                 }
                 var errors = new List<string>();
                 var count = 0;
+                var validEvents = 0;
+                var malformedLines = 0;
+                var pendingLines = 0;
+                var unknownDates = 0;
                 var state = SourceState.Ready;
                 try
                 {
@@ -58,6 +62,10 @@ public sealed class LogScanner
                                 else cache.Remove(key);
                             }
                             events.AddRange(parsed.Events);
+                            validEvents += parsed.Events.Count;
+                            malformedLines += parsed.MalformedLines;
+                            pendingLines += parsed.PendingLines;
+                            unknownDates += parsed.Events.Count(e => !e.HasKnownTimestamp);
                             if (parsed.RateLimit is { } limit) limits.Add(limit);
                             count++;
                         }
@@ -67,8 +75,14 @@ public sealed class LogScanner
                 catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { state = SourceState.Missing; }
                 catch (Exception ex) when (IsFileError(ex)) { errors.Add(ex.Message); }
                 if (errors.Count > 0) state = SourceState.Error;
-                statuses.Add(new(provider, root, state, state == SourceState.Missing ? "未发现日志"
-                    : errors.Count > 0 ? $"访问失败（{errors.Count} 项）：{errors[0]}" : count == 0 ? "未发现日志" : $"已读取 {count} 个日志文件"));
+                else if (malformedLines > 0 || unknownDates > 0) state = SourceState.Warning;
+                var message = state == SourceState.Missing || count == 0 && errors.Count == 0 ? "未发现日志"
+                    : $"已读取 {count} 个文件 · {validEvents} 条用量记录";
+                if (malformedLines > 0) message += $" · {malformedLines} 行 JSON 损坏，已跳过";
+                if (pendingLines > 0) message += $" · {pendingLines} 个末行疑似未写完，等待追加";
+                if (unknownDates > 0) message += $" · {unknownDates} 条时间未知，仅计入全部用量";
+                if (errors.Count > 0) message += $" · 访问失败（{errors.Count} 项）：{errors[0]}";
+                statuses.Add(new(provider, root, state, message));
             }
             foreach (var key in cache.Keys.Where(key => !visited.Contains(key)).ToArray()) cache.Remove(key);
             return new(events, limits.GroupBy(r => r.Provider).Select(g => g.MaxBy(r => r.UpdatedAt)!).ToArray(), statuses);
