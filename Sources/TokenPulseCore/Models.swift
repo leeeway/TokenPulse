@@ -110,6 +110,12 @@ public struct TokenUsageEvent: Codable, Sendable, Identifiable, Equatable {
     public let costUSD: Double
     /// Estimated savings in USD thanks to prompt cache hits
     public let savedByCacheUSD: Double
+    public var hasKnownTimestamp = true
+
+    private enum CodingKeys: String, CodingKey {
+        case id, provider, model, timestamp, sessionId, inputTokens, cacheWriteTokens, cacheReadTokens
+        case outputTokens, reasoningTokens, costUSD, savedByCacheUSD
+    }
 
     public init(
         id: String,
@@ -123,7 +129,8 @@ public struct TokenUsageEvent: Codable, Sendable, Identifiable, Equatable {
         outputTokens: Int,
         reasoningTokens: Int = 0,
         costUSD: Double? = nil,
-        savedByCacheUSD: Double? = nil
+        savedByCacheUSD: Double? = nil,
+        hasKnownTimestamp: Bool = true
     ) {
         self.id = id
         self.provider = provider
@@ -146,6 +153,7 @@ public struct TokenUsageEvent: Codable, Sendable, Identifiable, Equatable {
         )
         self.costUSD = costUSD ?? estimate.costUSD
         self.savedByCacheUSD = savedByCacheUSD ?? estimate.savedByCacheUSD
+        self.hasKnownTimestamp = hasKnownTimestamp
     }
 
     /// Total upstream (prompt) tokens sent or read from context cache.
@@ -274,6 +282,13 @@ public struct DashboardSnapshot: Codable, Sendable, Equatable {
     public let dailyTrend: [DailyTokenPoint]
     public let recentEvents: [TokenUsageEvent]
     public let runningLocalModels: [LocalRunningModel]
+    public var unknownTimestampEventCount = 0
+
+    private enum CodingKeys: String, CodingKey {
+        case generatedAt, window, totalInputTokens, totalCacheWriteTokens, totalCacheReadTokens, totalOutputTokens
+        case totalReasoningTokens, totalCostUSD, totalSavedByCacheUSD, totalSessions, totalEvents
+        case recentFiveMinTokens, recentFiveMinCostUSD, providers, dailyTrend, recentEvents, runningLocalModels
+    }
 
     /// Compact menu-bar presentation; complete provider totals remain in `providers`.
     public var recentProviders: [ProviderSummary] {

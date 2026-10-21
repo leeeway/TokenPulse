@@ -30,6 +30,11 @@ let package = Package(
             name: "TokenPulseCoreTests",
             dependencies: ["TokenPulseCore"],
             path: "Tests/TokenPulseCoreTests"
+        ),
+        .testTarget(
+            name: "TokenPulseAppTests",
+            dependencies: ["TokenPulseApp", "TokenPulseCore"],
+            path: "Tests/TokenPulseAppTests"
         )
     ]
 )

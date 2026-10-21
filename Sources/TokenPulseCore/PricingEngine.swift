@@ -114,6 +114,30 @@ public enum TokenFormatters {
         return reset <= now ? "上次重置 \(date) · 待更新" : "重置 \(date)"
     }
 
+    public static func quotaResetCountdown(_ reset: Date?, now: Date = Date(), timeZone: TimeZone = .current) -> String {
+        guard let reset, reset > now else { return quotaReset(reset, now: now, timeZone: timeZone) }
+        let minutes = Int(ceil(reset.timeIntervalSince(now) / 60))
+        let duration: String
+        if minutes >= 1440 {
+            let hours = minutes % 1440 / 60
+            duration = "约 \(minutes / 1440) 天" + (hours == 0 ? "" : " \(hours) 小时")
+        }
+        else if minutes >= 60 {
+            let remainder = minutes % 60
+            duration = "约 \(minutes / 60) 小时" + (remainder == 0 ? "" : " \(remainder) 分")
+        }
+        else { duration = minutes <= 1 ? "不到 1 分钟" : "约 \(minutes) 分钟" }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = timeZone
+        formatter.dateFormat = calendar.isDate(reset, inSameDayAs: now) ? "HH:mm"
+            : calendar.component(.year, from: reset) == calendar.component(.year, from: now) ? "MM/dd HH:mm" : "yyyy/MM/dd HH:mm"
+        return "\(duration)后 · \(formatter.string(from: reset))"
+    }
+
     public static func compactTokens(_ count: Int) -> String {
         let absVal = abs(Double(count))
         let sign = count < 0 ? "-" : ""

@@ -40,6 +40,11 @@ struct DashboardPopoverView: View {
             }
 
             heroCardsSection
+            if s.unknownTimestampEventCount > 0 {
+                Text("\(s.unknownTimestampEventCount) 条记录时间未知，仅计入「全部」，不参与趋势和高消耗提醒。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+            }
             upstreamDownstreamBar
             providerBreakdownSection
             sevenDayChartSection
@@ -66,12 +71,15 @@ struct DashboardPopoverView: View {
                     HStack(spacing: 5) {
                         Text("TokenPulse")
                             .font(.system(size: 14, weight: .bold))
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 6, height: 6)
-                        Text("LIVE")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.green)
+                        TimelineView(.periodic(from: .now, by: 15)) { context in
+                            let status = viewModel.dataStatus(at: context.date)
+                            HStack(spacing: 5) {
+                                Circle().fill(status == "LIVE" ? Color.green : Color.orange).frame(width: 6, height: 6)
+                                Text(status).font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(status == "LIVE" ? Color.green : Color.orange)
+                            }
+                            .help(viewModel.statusHelp)
+                        }
                     }
                     Text("macOS 本地 AI 上下行 Token 与配额实时监控")
                         .font(.system(size: 10))
@@ -98,6 +106,7 @@ struct DashboardPopoverView: View {
             }
             .buttonStyle(.borderless)
             .help("立即刷新本地日志")
+            .disabled(viewModel.isRefreshing)
         }
     }
 
@@ -245,7 +254,7 @@ struct DashboardPopoverView: View {
             }
 
             if s.providers.isEmpty {
-                Text("当前时间窗口内暂无 AI Token 记录，可切换至「近 30 天」或「全部」查看")
+                Text(s.unknownTimestampEventCount > 0 ? "部分用量时间未知，请切换至「全部」查看" : "当前时间窗口内暂无 AI Token 记录，可切换至「近 30 天」或「全部」查看")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 12)
@@ -315,9 +324,10 @@ struct DashboardPopoverView: View {
 
             Spacer()
 
-            Text("100% Local Read-Only · Zero Proxy")
+            Text(viewModel.lastScanAt.map { "日志更新 " + $0.formatted(date: .omitted, time: .standard) } ?? "正在读取本地日志…")
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundStyle(.secondary)
+                .help(viewModel.statusHelp)
 
             Spacer()
 
@@ -408,7 +418,7 @@ struct ProviderRowView: View {
                 .controlSize(.mini)
                 .tint(expired ? .gray : .accentColor)
                 .opacity(expired ? 0.4 : 1)
-            Text(TokenFormatters.quotaReset(resetsAt, now: now))
+            Text(TokenFormatters.quotaResetCountdown(resetsAt, now: now))
                 .font(.system(size: 9))
                 .fixedSize(horizontal: false, vertical: true)
         }

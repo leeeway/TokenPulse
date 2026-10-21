@@ -8,8 +8,19 @@ public final class UsageCollector: @unchecked Sendable {
     private var cachedAllEvents: [TokenUsageEvent] = []
     private var cachedRateLimits: [AIProvider: RateLimitSnapshot] = [:]
     private var cachedLocalModels: [LocalRunningModel] = []
+    private let ollamaSession: URLSession
+    private var scanTime: Date?
+    private var modelStatus = "尚未查询 Ollama"
 
-    public init(adapters: [ProviderAdapter]? = nil, customEventsURL: URL? = nil) {
+    public var lastScanAt: Date? { lock.withLock { scanTime } }
+    public var ollamaStatus: String { lock.withLock { modelStatus } }
+
+    public var sourceWarnings: [String] {
+        adapters.compactMap { adapter in adapter.accessWarning }
+    }
+
+    public init(adapters: [ProviderAdapter]? = nil, customEventsURL: URL? = nil, ollamaSession: URLSession = .shared) {
+        self.ollamaSession = ollamaSession
         self.adapters = adapters ?? [
             ClaudeCodeAdapter(),
             CodexAdapter(),
@@ -70,6 +81,12 @@ public final class UsageCollector: @unchecked Sendable {
 
     /// Scans all adapters and returns a fresh `DashboardSnapshot` for the requested time window.
     public func collectSnapshot(window: TimeWindow = .today, now: Date = Date()) -> DashboardSnapshot {
+        refreshLogCache(now: now)
+        return snapshotFromCache(window: window, now: now)
+    }
+
+    /// Refreshes read-only log data without performing an unused period aggregation.
+    public func refreshLogCache(now: Date = Date()) {
         var events: [TokenUsageEvent] = []
         var rateLimits: [AIProvider: RateLimitSnapshot] = [:]
 
@@ -87,16 +104,8 @@ public final class UsageCollector: @unchecked Sendable {
         lock.lock()
         cachedAllEvents = events
         cachedRateLimits = rateLimits
-        let localModels = cachedLocalModels
+        scanTime = now
         lock.unlock()
-
-        return Self.buildSnapshot(
-            allEvents: events,
-            rateLimits: rateLimits,
-            runningLocalModels: localModels,
-            window: window,
-            now: now
-        )
     }
 
     /// Recomputes snapshot for another `TimeWindow` using the most recently scanned events in memory.
@@ -107,9 +116,6 @@ public final class UsageCollector: @unchecked Sendable {
         let localModels = cachedLocalModels
         lock.unlock()
 
-        if events.isEmpty {
-            return collectSnapshot(window: window, now: now)
-        }
         return Self.buildSnapshot(
             allEvents: events,
             rateLimits: rateLimits,
@@ -125,9 +131,11 @@ public final class UsageCollector: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.timeoutInterval = 1.2
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let (data, response) = try await ollamaSession.data(for: request)
+            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let models = json["models"] as? [[String: Any]] else {
+                lock.withLock { cachedLocalModels = []; modelStatus = "Ollama 返回无效响应" }
                 return []
             }
             let parsed: [LocalRunningModel] = models.compactMap { item in
@@ -139,11 +147,13 @@ public final class UsageCollector: @unchecked Sendable {
             }
             lock.withLock {
                 cachedLocalModels = parsed
+                modelStatus = parsed.isEmpty ? "Ollama 已连接，暂无运行模型" : "Ollama：\(parsed.count) 个运行模型"
             }
             return parsed
         } catch {
             lock.withLock {
                 cachedLocalModels = []
+                modelStatus = "Ollama 未连接"
             }
             return []
         }
@@ -160,7 +170,7 @@ public final class UsageCollector: @unchecked Sendable {
         let cutoff = window.startDate(now: now, calendar: cal)
         let filtered: [TokenUsageEvent]
         if let cutoff {
-            filtered = allEvents.filter { $0.timestamp >= cutoff }
+            filtered = allEvents.filter { $0.hasKnownTimestamp && $0.timestamp >= cutoff }
         } else {
             filtered = allEvents
         }
@@ -169,11 +179,9 @@ public final class UsageCollector: @unchecked Sendable {
         var recentFiveMinTokens = 0
         var recentFiveMinCost = 0.0
         for ev in allEvents {
-            if ev.timestamp >= fiveMinAgo && ev.timestamp <= now.addingTimeInterval(60) {
+            if ev.hasKnownTimestamp && ev.timestamp >= fiveMinAgo && ev.timestamp <= now.addingTimeInterval(60) {
                 recentFiveMinTokens += ev.totalTokens
                 recentFiveMinCost += ev.costUSD
-            } else if ev.timestamp < fiveMinAgo {
-                break
             }
         }
 
@@ -226,7 +234,7 @@ public final class UsageCollector: @unchecked Sendable {
                 pSaved += ev.savedByCacheUSD
                 sessions.insert(ev.sessionId)
                 modelCounts[ev.model, default: 0] += ev.totalTokens
-                if lastActive == nil || ev.timestamp > lastActive! {
+                if ev.hasKnownTimestamp && (lastActive == nil || ev.timestamp > lastActive!) {
                     lastActive = ev.timestamp
                 }
             }
@@ -275,7 +283,7 @@ public final class UsageCollector: @unchecked Sendable {
             var down = 0
             var cost = 0.0
             for ev in allEvents {
-                if ev.timestamp >= dayStart && ev.timestamp < dayEnd {
+                if ev.hasKnownTimestamp && ev.timestamp >= dayStart && ev.timestamp < dayEnd {
                     up += ev.upstreamTokens
                     down += ev.downstreamTokens
                     cost += ev.costUSD
@@ -309,7 +317,8 @@ public final class UsageCollector: @unchecked Sendable {
             providers: providerSummaries,
             dailyTrend: dailyPoints,
             recentEvents: Array(filtered.prefix(25)),
-            runningLocalModels: runningLocalModels
+            runningLocalModels: runningLocalModels,
+            unknownTimestampEventCount: allEvents.filter { !$0.hasKnownTimestamp }.count
         )
     }
 }

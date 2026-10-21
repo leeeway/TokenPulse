@@ -16,7 +16,27 @@ public struct AdapterScanResult: Sendable {
 /// Open-source extension protocol: implement this to support a new AI tool in TokenPulse.
 public protocol ProviderAdapter: Sendable {
     var provider: AIProvider { get }
+    var accessWarning: String? { get }
     func scan() -> AdapterScanResult
+}
+
+public extension ProviderAdapter {
+    var accessWarning: String? { nil }
+}
+
+private enum SourceAccess {
+    static func warning(provider: AIProvider, at url: URL) -> String? {
+        let fm = FileManager.default
+        do {
+            let attributes = try fm.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeDirectory,
+                  fm.isReadableFile(atPath: url.path) else {
+                return "\(provider.shortName)：日志目录不可读取，请检查路径和权限"
+            }
+            return nil
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile { return nil }
+        catch { return "\(provider.shortName)：无法访问日志目录（\(error.localizedDescription)）" }
+    }
 }
 
 /// Shared ISO8601 date parser supporting fractional and non-fractional seconds.
@@ -39,6 +59,7 @@ public enum LogDateParser {
 public final class ClaudeCodeAdapter: ProviderAdapter, @unchecked Sendable {
     public let provider: AIProvider = .claudeCode
     private let baseDirectory: URL
+    public var accessWarning: String? { SourceAccess.warning(provider: provider, at: baseDirectory) }
     private let lock = NSLock()
     private var fileCache: [String: (mtime: Date, size: UInt64, events: [TokenUsageEvent])] = [:]
 
@@ -130,7 +151,8 @@ public final class ClaudeCodeAdapter: ProviderAdapter, @unchecked Sendable {
                     inputTokens: input,
                     cacheWriteTokens: cacheWrite,
                     cacheReadTokens: cacheRead,
-                    outputTokens: output
+                    outputTokens: output,
+                    hasKnownTimestamp: LogDateParser.parse(json["timestamp"] as? String) != nil
                 )
             )
         }
@@ -143,6 +165,7 @@ public final class ClaudeCodeAdapter: ProviderAdapter, @unchecked Sendable {
 public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
     public let provider: AIProvider = .codex
     private let baseDirectory: URL
+    public var accessWarning: String? { SourceAccess.warning(provider: provider, at: baseDirectory) }
     private let lock = NSLock()
     private var fileCache: [String: (mtime: Date, size: UInt64, events: [TokenUsageEvent], rateLimit: RateLimitSnapshot?)] = [:]
 
@@ -269,7 +292,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
                     }
                 }
 
-                latestRateLimit = RateLimitSnapshot(
+                let candidate = RateLimitSnapshot(
                     provider: .codex,
                     planType: rl["plan_type"] as? String,
                     primaryUsedPercent: primaryPct,
@@ -280,6 +303,9 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
                     secondaryResetsAt: secReset,
                     updatedAt: timestamp
                 )
+                if latestRateLimit == nil || candidate.updatedAt >= latestRateLimit!.updatedAt {
+                    latestRateLimit = candidate
+                }
             }
 
             guard let info = payload["info"] as? [String: Any],
@@ -320,7 +346,8 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
                     cacheWriteTokens: deltaCacheWrite,
                     cacheReadTokens: deltaCached,
                     outputTokens: deltaOutput,
-                    reasoningTokens: deltaReasoning
+                    reasoningTokens: deltaReasoning,
+                    hasKnownTimestamp: LogDateParser.parse(json["timestamp"] as? String) != nil
                 )
             )
         }
@@ -334,6 +361,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
 public final class AntigravityAdapter: ProviderAdapter, @unchecked Sendable {
     public let provider: AIProvider = .antigravity
     private let baseDirectory: URL
+    public var accessWarning: String? { SourceAccess.warning(provider: provider, at: baseDirectory) }
     private let lock = NSLock()
     private var fileCache: [String: (mtime: Date, size: UInt64, events: [TokenUsageEvent])] = [:]
 
@@ -427,7 +455,8 @@ public final class AntigravityAdapter: ProviderAdapter, @unchecked Sendable {
                     inputTokens: input,
                     cacheWriteTokens: 0,
                     cacheReadTokens: cacheRead,
-                    outputTokens: output
+                    outputTokens: output,
+                    hasKnownTimestamp: LogDateParser.parse(json["created_at"] as? String) != nil
                 )
             )
         }

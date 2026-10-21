@@ -19,40 +19,98 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
+protocol DashboardCollecting: Sendable {
+    func refreshLogCache(now: Date)
+    func snapshotFromCache(window: TimeWindow, now: Date) -> DashboardSnapshot
+    func refreshOllamaModels() async -> [LocalRunningModel]
+    var lastScanAt: Date? { get }
+    var sourceWarnings: [String] { get }
+    var ollamaStatus: String { get }
+}
+
+extension UsageCollector: DashboardCollecting { }
+
 @MainActor
 public final class AppViewModel: ObservableObject {
-    @Published public var selectedWindow: TimeWindow = .today {
+    @Published public var selectedWindow: TimeWindow {
         didSet {
-            snapshot = collector.snapshotFromCache(window: selectedWindow)
+            guard selectedWindow != oldValue else { return }
+            defaults.set(selectedWindow.rawValue, forKey: "selectedWindow")
+            renderFromCache()
         }
     }
-    @Published public var displayMode: MenuBarDisplayMode = .tokensAndCost
+    @Published public var displayMode: MenuBarDisplayMode {
+        didSet { defaults.set(displayMode.rawValue, forKey: "displayMode") }
+    }
     @Published public var snapshot: DashboardSnapshot
-    @Published public var isRefreshing: Bool = false
-    @Published public var copiedToast: Bool = false
+    @Published public var isRefreshing = false
+    @Published public var copiedToast = false
+    @Published public private(set) var lastScanAt: Date?
+    @Published public private(set) var sourceWarnings: [String] = []
+    @Published public private(set) var ollamaStatus = "尚未查询 Ollama"
 
-    private let collector = UsageCollector()
+    private let collector: any DashboardCollecting
+    private let defaults: UserDefaults
+    private let clock: @Sendable () -> Date
     private var timer: Timer?
+    private var renderRevision = 0
+    private var renderTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
 
-    public init() {
-        let initialToday = collector.collectSnapshot(window: .today)
-        if initialToday.grandTotalTokens > 0 {
-            self.selectedWindow = .today
-            self.snapshot = initialToday
-        } else {
-            self.selectedWindow = .thirtyDays
-            self.snapshot = collector.snapshotFromCache(window: .thirtyDays)
-        }
+    public convenience init() {
+        self.init(collector: UsageCollector(), defaults: .standard)
+    }
 
-        self.timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshNow()
+    init(collector: any DashboardCollecting, defaults: UserDefaults, startsAutomatically: Bool = true,
+         clock: @escaping @Sendable () -> Date = { Date() }) {
+        self.collector = collector
+        self.defaults = defaults
+        self.clock = clock
+        let window = defaults.string(forKey: "selectedWindow").flatMap(TimeWindow.init(rawValue:)) ?? .today
+        selectedWindow = window
+        displayMode = defaults.string(forKey: "displayMode").flatMap(MenuBarDisplayMode.init(rawValue:)) ?? .tokensAndCost
+        snapshot = UsageCollector.buildSnapshot(allEvents: [], rateLimits: [:], runningLocalModels: [], window: window, now: clock())
+        if startsAutomatically {
+            timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.refreshNow() }
             }
+            refreshNow()
         }
+    }
 
-        Task {
-            _ = await collector.refreshOllamaModels()
-            self.snapshot = collector.snapshotFromCache(window: self.selectedWindow)
+    public func dataStatus(at now: Date) -> String {
+        guard let lastScanAt else { return "读取中" }
+        if now.timeIntervalSince(lastScanAt) > 30 { return "待刷新" }
+        if !sourceWarnings.isEmpty || snapshot.unknownTimestampEventCount > 0 { return "需检查" }
+        return "LIVE"
+    }
+
+    public var statusHelp: String {
+        var lines = ["只读本地日志 · 费用为估算值", ollamaStatus]
+        if let lastScanAt { lines.append("日志更新于 " + lastScanAt.formatted(date: .numeric, time: .standard)) }
+        lines.append(contentsOf: sourceWarnings)
+        if snapshot.unknownTimestampEventCount > 0 {
+            lines.append("\(snapshot.unknownTimestampEventCount) 条记录时间未知，仅计入全部用量，不参与趋势和高消耗提醒。")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func renderFromCache() {
+        renderRevision += 1
+        let revision = renderRevision
+        let window = selectedWindow
+        let collector = collector
+        let now = clock()
+        renderTask?.cancel()
+        renderTask = Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                (collector.snapshotFromCache(window: window, now: now), collector.lastScanAt, collector.sourceWarnings, collector.ollamaStatus)
+            }.value
+            guard let self, !Task.isCancelled, revision == renderRevision, window == selectedWindow else { return }
+            snapshot = result.0
+            lastScanAt = result.1
+            sourceWarnings = result.2
+            ollamaStatus = result.3
         }
     }
 
@@ -71,16 +129,16 @@ public final class AppViewModel: ObservableObject {
     public func refreshNow() {
         guard !isRefreshing else { return }
         isRefreshing = true
-        let win = selectedWindow
-        let collectorRef = collector
-
-        Task.detached(priority: .utility) {
-            _ = await collectorRef.refreshOllamaModels()
-            let fresh = collectorRef.collectSnapshot(window: win)
-            await MainActor.run { [weak self] in
-                self?.snapshot = fresh
-                self?.isRefreshing = false
-            }
+        let collector = collector
+        let now = clock()
+        refreshTask = Task { [weak self] in
+            // Run both sources concurrently; a slow Ollama query must not hold back log totals.
+            async let models = collector.refreshOllamaModels()
+            await Task.detached(priority: .utility) { collector.refreshLogCache(now: now) }.value
+            self?.renderFromCache()
+            _ = await models
+            self?.renderFromCache()
+            self?.isRefreshing = false
         }
     }
 
