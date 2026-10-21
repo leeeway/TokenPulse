@@ -18,5 +18,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m unittest discover -s integrations/lwblog/tests -v
-      - run: bash -n integrations/lwblog/deploy-static.sh integrations/lwblog/rollback-static.sh
+      - run: |
+          for script in integrations/lwblog/deploy-static.sh integrations/lwblog/rollback-static.sh; do
+            bash -n "$script"
+          done
       - run: python3 integrations/lwblog/check-versions.py --online

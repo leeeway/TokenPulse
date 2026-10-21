@@ -18,8 +18,8 @@
       {"zh":"轻量常驻","en":"Stay within reach","body":{"zh":"Mac 菜单栏、Windows 系统托盘；关闭面板后继续后台运行。","en":"Lives in the Mac menu bar or Windows tray and continues running when the panel closes."}}
     ],
     "downloads":[
-      {"label":"macOS · Apple Silicon", "version":"0.1.2", "system":"macOS 14+ · arm64", "href":"https://github.com/leeeway/TokenPulse/releases/download/mac-v0.1.2/TokenPulse-macOS-arm64.zip"},
-      {"label":"Windows · x64", "version":"0.4.2", "system":"Windows 11 · x64", "href":"https://github.com/leeeway/TokenPulse/releases/download/windows-v0.4.2/TokenPulse-Windows-x64.zip"}
+      {"label":"macOS · Apple Silicon", "version":"0.1.3", "system":"macOS 14+ · arm64", "href":"https://github.com/leeeway/TokenPulse/releases/download/mac-v0.1.3/TokenPulse-macOS-arm64.zip"},
+      {"label":"Windows · x64", "version":"0.4.3", "system":"Windows 11 · x64", "href":"https://github.com/leeeway/TokenPulse/releases/download/windows-v0.4.3/TokenPulse-Windows-x64.zip"}
     ],
     "downloadNote":{"zh":"预览版本。Mac 包为本地 ad-hoc 签名，未做 Apple 公证；Windows 包未做发布者签名。请确认版本和系统要求，校验文件可在对应 Release 查看。Windows 多屏缩放与托盘交互仍需实机验收。","en":"Preview builds. The Mac app is ad-hoc signed and not notarized; the Windows package is not publisher-signed. Check system requirements and the checksums on each release. Windows mixed-DPI and tray interactions still need physical desktop validation."}
   },
