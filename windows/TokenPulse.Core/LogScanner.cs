@@ -13,6 +13,8 @@ public sealed class LogScanner
         {
             List<UsageEvent> events = [];
             List<RateLimit> limits = [];
+            List<QuotaObservation> observations = [];
+            List<UsageEvent> nativeCodexEvents = [];
             List<SourceStatus> statuses = [];
             HashSet<(string Provider, string Path)> visited = [];
             foreach (var (provider, root, singleFile, enabled) in settings.LogSources())
@@ -62,6 +64,11 @@ public sealed class LogScanner
                                 else cache.Remove(key);
                             }
                             events.AddRange(parsed.Events);
+                            if (provider == Providers.Codex)
+                            {
+                                nativeCodexEvents.AddRange(parsed.Events);
+                                observations.AddRange(parsed.QuotaObservations);
+                            }
                             validEvents += parsed.Events.Count;
                             malformedLines += parsed.MalformedLines;
                             pendingLines += parsed.PendingLines;
@@ -85,7 +92,8 @@ public sealed class LogScanner
                 statuses.Add(new(provider, root, state, message));
             }
             foreach (var key in cache.Keys.Where(key => !visited.Contains(key)).ToArray()) cache.Remove(key);
-            return new(events, limits.GroupBy(r => r.Provider).Select(g => g.MaxBy(r => r.UpdatedAt)!).ToArray(), statuses);
+            return new(events, limits.GroupBy(r => r.Provider).Select(g => g.MaxBy(r => r.UpdatedAt)!).ToArray(), statuses)
+            { NativeCodexEvents = nativeCodexEvents, QuotaObservations = observations.Distinct().OrderBy(o => o.RecordedAtUtc).ToArray() };
         }
     }
 

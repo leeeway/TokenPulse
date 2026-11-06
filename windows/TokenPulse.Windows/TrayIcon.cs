@@ -10,11 +10,12 @@ internal sealed class TrayIcon : IDisposable
     private readonly Forms.ContextMenuStrip menu = new();
     private readonly Icon normal = CreateIcon(false);
     private readonly Icon warning = CreateIcon(true);
-    public TrayIcon(Action show, Action refresh, Action settings, Action exit)
+    public TrayIcon(Action show, Action refresh, Action settings, Action exit, Action? ledger = null)
     {
         menu.Items.Add("打开面板", null, (_, _) => show());
         menu.Items.Add("立即刷新", null, (_, _) => refresh());
         menu.Items.Add("设置", null, (_, _) => settings());
+        if (ledger is not null) menu.Items.Add("Codex 配额账本与周报", null, (_, _) => ledger());
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => exit());
         // NotifyIcon handles the shell's TaskbarCreated message and restores itself after Explorer restarts.

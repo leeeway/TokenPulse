@@ -1,15 +1,18 @@
 import Foundation
+import CoreFoundation
 
 /// Result returned by a `ProviderAdapter` scan.
 public struct AdapterScanResult: Sendable {
     public let provider: AIProvider
     public let events: [TokenUsageEvent]
     public let rateLimit: RateLimitSnapshot?
+    public let ledgerInput: CodexLedgerInput?
 
-    public init(provider: AIProvider, events: [TokenUsageEvent], rateLimit: RateLimitSnapshot? = nil) {
+    public init(provider: AIProvider, events: [TokenUsageEvent], rateLimit: RateLimitSnapshot? = nil, ledgerInput: CodexLedgerInput? = nil) {
         self.provider = provider
         self.events = events
         self.rateLimit = rateLimit
+        self.ledgerInput = ledgerInput
     }
 }
 
@@ -160,6 +163,13 @@ public final class ClaudeCodeAdapter: ProviderAdapter, @unchecked Sendable {
     }
 }
 
+public struct CodexParsedLog: Sendable {
+    public let events: [TokenUsageEvent]
+    public let rateLimit: RateLimitSnapshot?
+    public let observations: [QuotaObservation]
+    public let readSucceeded: Bool
+}
+
 // MARK: - 2. OpenAI Codex Adapter (~/.codex/sessions/**/*.jsonl)
 
 public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
@@ -167,7 +177,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
     private let baseDirectory: URL
     public var accessWarning: String? { SourceAccess.warning(provider: provider, at: baseDirectory) }
     private let lock = NSLock()
-    private var fileCache: [String: (mtime: Date, size: UInt64, events: [TokenUsageEvent], rateLimit: RateLimitSnapshot?)] = [:]
+    private var fileCache: [String: (mtime: Date, size: UInt64, parsed: CodexParsedLog)] = [:]
 
     public init(baseDirectory: URL? = nil) {
         if let baseDirectory {
@@ -180,65 +190,69 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
 
     public func scan() -> AdapterScanResult {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: baseDirectory.path) else {
-            return AdapterScanResult(provider: provider, events: [])
+        func unavailable(_ message: String) -> AdapterScanResult {
+            AdapterScanResult(provider: provider, events: [], ledgerInput: CodexLedgerInput(warnings: [message]))
         }
-
+        guard fm.fileExists(atPath: baseDirectory.path), fm.isReadableFile(atPath: baseDirectory.path) else {
+            lock.withLock { fileCache.removeAll() }
+            return unavailable("Codex 原生日志目录不存在或不可读取。")
+        }
         var allEvents: [TokenUsageEvent] = []
+        var allObservations: [QuotaObservation] = []
         var latestRateLimit: RateLimitSnapshot?
-
-        guard let enumerator = fm.enumerator(
-            at: baseDirectory,
+        var errors = false
+        var warnings: [String] = []
+        var visited = Set<String>()
+        guard let enumerator = fm.enumerator(at: baseDirectory,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return AdapterScanResult(provider: provider, events: [])
+            options: [.skipsHiddenFiles], errorHandler: { _, _ in errors = true; return true }) else {
+            return unavailable("Codex 原生日志目录无法遍历。")
         }
-
         for case let fileURL as URL in enumerator {
             guard fileURL.pathExtension == "jsonl" else { continue }
             guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
-                  values.isRegularFile == true else { continue }
-
+                  values.isRegularFile == true else { errors = true; continue }
             let mtime = values.contentModificationDate ?? .distantPast
             let size = UInt64(values.fileSize ?? 0)
             let key = fileURL.path
-
-            lock.lock()
-            if let cached = fileCache[key], cached.mtime == mtime && cached.size == size {
-                allEvents.append(contentsOf: cached.events)
-                if let rl = cached.rateLimit {
-                    if latestRateLimit == nil || rl.updatedAt > latestRateLimit!.updatedAt {
-                        latestRateLimit = rl
-                    }
+            visited.insert(key)
+            let cached = lock.withLock { fileCache[key] }
+            let parsed: CodexParsedLog
+            if let cached, cached.mtime == mtime && cached.size == size {
+                parsed = cached.parsed
+            } else {
+                parsed = Self.parseDetailedRolloutFile(at: fileURL, fallbackDate: mtime)
+                let after = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                lock.withLock {
+                    if parsed.readSucceeded && after?.contentModificationDate == mtime && UInt64(after?.fileSize ?? 0) == size {
+                        fileCache[key] = (mtime, size, parsed)
+                    } else { fileCache.removeValue(forKey: key) }
                 }
-                lock.unlock()
-                continue
             }
-            lock.unlock()
-
-            let parsed = Self.parseRolloutFile(at: fileURL, fallbackDate: mtime)
-            lock.lock()
-            fileCache[key] = (mtime: mtime, size: size, events: parsed.events, rateLimit: parsed.rateLimit)
-            lock.unlock()
-
+            if !parsed.readSucceeded { errors = true }
             allEvents.append(contentsOf: parsed.events)
-            if let rl = parsed.rateLimit {
-                if latestRateLimit == nil || rl.updatedAt > latestRateLimit!.updatedAt {
-                    latestRateLimit = rl
-                }
-            }
+            allObservations.append(contentsOf: parsed.observations)
+            if let limit = parsed.rateLimit, latestRateLimit == nil || limit.updatedAt > latestRateLimit!.updatedAt { latestRateLimit = limit }
         }
-
-        return AdapterScanResult(provider: provider, events: allEvents, rateLimit: latestRateLimit)
+        lock.withLock { fileCache = fileCache.filter { visited.contains($0.key) } }
+        if errors { warnings.append("部分 Codex 原生日志无法读取，本轮账本统计暂停更新，避免将缺失记录当作零用量。") }
+        if visited.isEmpty { warnings.append("没有发现 Codex 原生日志文件。") }
+        return AdapterScanResult(provider: provider, events: allEvents, rateLimit: latestRateLimit,
+            ledgerInput: CodexLedgerInput(events: allEvents, observations: allObservations,
+                                         sourceAvailable: !errors, warnings: warnings))
     }
 
     public static func parseRolloutFile(
         at url: URL,
         fallbackDate: Date = Date()
     ) -> (events: [TokenUsageEvent], rateLimit: RateLimitSnapshot?) {
+        let parsed = parseDetailedRolloutFile(at: url, fallbackDate: fallbackDate)
+        return (parsed.events, parsed.rateLimit)
+    }
+
+    public static func parseDetailedRolloutFile(at url: URL, fallbackDate: Date = Date()) -> CodexParsedLog {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            return ([], nil)
+            return CodexParsedLog(events: [], rateLimit: nil, observations: [], readSucceeded: false)
         }
 
         let sessionId = url.deletingPathExtension().lastPathComponent
@@ -251,6 +265,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         var events: [TokenUsageEvent] = []
         var latestRateLimit: RateLimitSnapshot?
         var lineIndex = 0
+        var observations: [QuotaObservation] = []
 
         content.enumerateLines { line, _ in
             lineIndex += 1
@@ -270,7 +285,16 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
             }
 
             guard payloadType == "token_count" else { return }
-            let timestamp = LogDateParser.parse(json["timestamp"] as? String) ?? fallbackDate
+            let genuineTimestamp = LogDateParser.parse(json["timestamp"] as? String)
+            let timestamp = genuineTimestamp ?? fallbackDate
+            if let observedAt = genuineTimestamp, let limits = payload["rate_limits"] as? [String: Any] {
+                for role in ["primary", "secondary"] {
+                    if let window = limits[role] as? [String: Any],
+                       let observation = strictWeeklyObservation(window, role: role, observedAt: observedAt, plan: limits["plan_type"] as? String) {
+                        observations.append(observation)
+                    }
+                }
+            }
 
             // Parse rate_limits if present
             if let rl = payload["rate_limits"] as? [String: Any],
@@ -352,8 +376,21 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
             )
         }
 
-        return (events, latestRateLimit)
+        return CodexParsedLog(events: events, rateLimit: latestRateLimit, observations: observations, readSucceeded: true)
     }
+    private static func strictWeeklyObservation(_ window: [String: Any], role: String, observedAt: Date, plan: String?) -> QuotaObservation? {
+        func number(_ key: String) -> Double? {
+            guard let value = window[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
+            let result = value.doubleValue
+            return result.isFinite ? result : nil
+        }
+        guard number("window_minutes") == 10080, let used = number("used_percent"), (0...100).contains(used),
+              let epoch = number("resets_at"), epoch > 0, epoch <= 253402300799 else { return nil }
+        let result = QuotaObservation(observedAt: observedAt, windowRole: role, windowMinutes: 10080,
+                                     resetsAt: Date(timeIntervalSince1970: epoch), usedPercent: used, planType: plan)
+        return result.isValidWeeklyObservation ? result : nil
+    }
+
 }
 
 // MARK: - 3. Google Antigravity Adapter (~/.gemini/antigravity/brain/**/.system_generated/logs/transcript.jsonl)

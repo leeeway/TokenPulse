@@ -13,6 +13,8 @@ internal sealed class App : Application
     private Settings settings = new();
     private MainWindow? dashboard;
     private TrayIcon? tray;
+    private QuotaLedgerSession? ledger;
+    private QuotaLedgerWindow? ledgerWindow;
     private Mutex? instance;
     private bool ownsMutex, refreshing, settingsOpen;
     private ScanResult? scan;
@@ -50,9 +52,10 @@ internal sealed class App : Application
         (settings, settingsWarning) = store.Load();
         try { settings = settings with { StartWithWindows = StartupRegistration.Read() is not null }; }
         catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException) { settingsWarning = "无法读取开机启动状态：" + ex.Message; }
-        dashboard = new MainWindow(() => _ = RefreshAsync(), OpenSettings, () => _ = RenderAsync());
+        if (!smoke) ledger = new QuotaLedgerSession();
+        dashboard = new MainWindow(() => _ = RefreshAsync(), OpenSettings, () => _ = RenderAsync(), OpenLedger);
         MainWindow = dashboard;
-        tray = new TrayIcon(dashboard.OpenNearTray, () => _ = RefreshAsync(), OpenSettings, () => Shutdown());
+        tray = new TrayIcon(dashboard.OpenNearTray, () => _ = RefreshAsync(), OpenSettings, () => Shutdown(), OpenLedger);
         dashboard.ShowError(settingsWarning);
         if (smoke)
         {
@@ -78,6 +81,7 @@ internal sealed class App : Application
         refreshing = true;
         dashboard?.SetRefreshing(true);
         var currentSettings = settings;
+        var ledgerGeneration = ledger?.Generation;
         try
         {
             await RefreshPipeline.RunAsync(
@@ -87,7 +91,12 @@ internal sealed class App : Application
                 async result =>
                 {
                     if (currentSettings != settings || stopping.IsCancellationRequested) return;
+                    if (ledger is { } session)
+                        await Task.Run(() => session.Update(result, currentSettings.EnableCodex, DateTimeOffset.UtcNow,
+                            expectedGeneration: ledgerGeneration), stopping.Token);
+                    if (currentSettings != settings || stopping.IsCancellationRequested) return;
                     scan = result; scanSettings = currentSettings;
+                    ledgerWindow?.Refresh();
                     localModels = new([], currentSettings.EnableOllama ? "正在查询 Ollama…" : "Ollama 查询已关闭");
                     dashboard?.ShowError(settingsWarning);
                     await RenderAsync();
@@ -142,6 +151,19 @@ internal sealed class App : Application
         }
         finally { if (ReferenceEquals(rendering, work)) rendering = null; }
     }
+    private void OpenLedger()
+    {
+        if (ledger is null) return;
+        if (ledgerWindow is null)
+        {
+            ledgerWindow = new QuotaLedgerWindow(ledger);
+            ledgerWindow.Closed += (_, _) => ledgerWindow = null;
+        }
+        ledgerWindow.Refresh();
+        ledgerWindow.Show();
+        if (ledgerWindow.WindowState == WindowState.Minimized) ledgerWindow.WindowState = WindowState.Normal;
+        ledgerWindow.Activate();
+    }
     private void OpenSettings()
     {
         if (settingsOpen || dashboard is null) return;
@@ -171,6 +193,8 @@ internal sealed class App : Application
             rendering?.Cancel();
             renderRevision++;
             settings = candidate; settingsWarning = null;
+            ledger?.Suspend(candidate.EnableCodex);
+            ledgerWindow?.Refresh();
             dashboard?.SetDataPending();
             return null;
         }
@@ -188,6 +212,7 @@ internal sealed class App : Application
     {
         timer.Stop(); stopping.Cancel();
         if (dashboard is not null) { dashboard.AllowClose = true; dashboard.Close(); }
+        ledgerWindow?.Close();
         tray?.Dispose(); ollama.Dispose();
         if (ownsMutex) instance?.ReleaseMutex();
         instance?.Dispose();

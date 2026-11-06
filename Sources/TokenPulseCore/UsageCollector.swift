@@ -7,6 +7,7 @@ public final class UsageCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedAllEvents: [TokenUsageEvent] = []
     private var cachedRateLimits: [AIProvider: RateLimitSnapshot] = [:]
+    private var cachedLedgerInput = CodexLedgerInput.empty()
     private var cachedLocalModels: [LocalRunningModel] = []
     private let ollamaSession: URLSession
     private var scanTime: Date?
@@ -89,10 +90,15 @@ public final class UsageCollector: @unchecked Sendable {
     public func refreshLogCache(now: Date = Date()) {
         var events: [TokenUsageEvent] = []
         var rateLimits: [AIProvider: RateLimitSnapshot] = [:]
+        var nativeLedger = CodexLedgerInput.empty(scannedAt: now)
 
         for adapter in adapters {
             let result = adapter.scan()
             events.append(contentsOf: result.events)
+            if adapter.provider == .codex, let ledger = result.ledgerInput {
+                nativeLedger = CodexLedgerInput(events: ledger.events, observations: ledger.observations,
+                    scannedAt: now, sourceAvailable: ledger.sourceAvailable, warnings: ledger.warnings)
+            }
             if let rl = result.rateLimit {
                 rateLimits[adapter.provider] = rl
             }
@@ -104,9 +110,13 @@ public final class UsageCollector: @unchecked Sendable {
         lock.lock()
         cachedAllEvents = events
         cachedRateLimits = rateLimits
+        cachedLedgerInput = nativeLedger
         scanTime = now
         lock.unlock()
     }
+
+    /// One atomic native-source snapshot; never includes custom Codex events.
+    public func ledgerInputFromCache() -> CodexLedgerInput { lock.withLock { cachedLedgerInput } }
 
     /// Recomputes snapshot for another `TimeWindow` using the most recently scanned events in memory.
     public func snapshotFromCache(window: TimeWindow, now: Date = Date()) -> DashboardSnapshot {

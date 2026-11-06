@@ -10,6 +10,8 @@ public static class LogParser
     private static long Number(JsonElement node, string name) => Field(node, name) is var value && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number) ? Math.Max(0, number) : 0;
     private static double? Real(JsonElement node, string name) => Field(node, name) is var value && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) && double.IsFinite(number) ? number : null;
     private static DateTimeOffset? Date(string? value) => DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var date) ? date : null;
+    private static int? KnownMinutes(JsonElement node) => Field(node, "window_minutes") is var value
+        && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var minutes) && minutes > 0 ? minutes : null;
     private static DateTimeOffset? Epoch(JsonElement node)
     {
         var seconds = Real(node, "resets_at");
@@ -20,6 +22,7 @@ public static class LogParser
     {
         List<UsageEvent> events = [];
         RateLimit? latest = null;
+        List<QuotaObservation> observations = [];
         var model = "gpt-5-codex";
         long previousInput = 0, previousWrite = 0, previousRead = 0, previousOutput = 0, previousReasoning = 0;
         var index = 0;
@@ -58,6 +61,18 @@ public static class LogParser
                     if (type != "token_count") continue;
                     var timestamp = Date(Text(root, "timestamp")) ?? fallbackDate;
                     var limits = Field(payload, "rate_limits");
+                    // The ledger never promotes mtime, missing percentages or default windows to evidence.
+                    var rawTime = Text(root, "timestamp");
+                    if (rawTime is not null && rawTime.Contains('T') && (rawTime.EndsWith('Z') || rawTime.Length >= 6 && rawTime[^6] is '+' or '-') && Date(rawTime) is { } recorded)
+                    {
+                        foreach (var (role, node) in new[] { ("primary", Field(limits, "primary")), ("secondary", Field(limits, "secondary")) })
+                        {
+                            if (Real(node, "used_percent") is not { } percent || percent is < 0 or > 100
+                                || KnownMinutes(node) is not { } minutes
+                                || Epoch(node) is not { } reset) continue;
+                            observations.Add(new(recorded.ToUniversalTime(), role, minutes, reset.ToUniversalTime(), percent, Text(limits, "plan_type")));
+                        }
+                    }
                     var primary = Field(limits, "primary");
                     if (primary.ValueKind == JsonValueKind.Object)
                     {
@@ -120,7 +135,7 @@ public static class LogParser
                 else malformedLines++;
             }
         }
-        return new(events, latest) { MalformedLines = malformedLines, PendingLines = pendingLines };
+        return new(events, latest) { MalformedLines = malformedLines, PendingLines = pendingLines, QuotaObservations = observations };
     }
 
     private static bool IsIncompleteObject(string line)

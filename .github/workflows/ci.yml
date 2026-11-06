@@ -19,7 +19,30 @@ jobs:
       - name: Run Unit Tests
         run: swift test
 
+      - name: Render native ledger scenarios
+        run: bash scripts/render-mac-ledger.sh dist/ui-previews
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macOS-ledger-previews
+          path: dist/ui-previews
+          if-no-files-found: warn
+
       - name: Package macOS Menu Bar App & CLI
         run: |
           chmod +x scripts/build-app.sh
           ./scripts/build-app.sh
+      - name: Archive macOS preview
+        run: |
+          codesign --verify --deep --strict dist/TokenPulse.app
+          archive="TokenPulse-macOS-$(uname -m).zip"
+          ditto -c -k --sequesterRsrc --keepParent dist/TokenPulse.app "dist/$archive"
+          (cd dist && shasum -a 256 "$archive" > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TokenPulse-macOS
+          path: |
+            dist/TokenPulse-macOS-*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

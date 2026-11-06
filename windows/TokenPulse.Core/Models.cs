@@ -43,13 +43,21 @@ public sealed record RateLimit(string Provider, string? PlanType, QuotaWindow Pr
     QuotaWindow? Secondary, DateTimeOffset UpdatedAt);
 public sealed record ParsedLog(IReadOnlyList<UsageEvent> Events, RateLimit? RateLimit = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<QuotaObservation> QuotaObservations { get; init; } = [];
     public int MalformedLines { get; init; }
     public int PendingLines { get; init; }
 }
 public enum SourceState { Ready, Missing, Error, Disabled, Warning }
 public sealed record SourceStatus(string Provider, string Path, SourceState State, string Message);
 public sealed record ScanResult(IReadOnlyList<UsageEvent> Events, IReadOnlyList<RateLimit> RateLimits,
-    IReadOnlyList<SourceStatus> Statuses);
+    IReadOnlyList<SourceStatus> Statuses)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<QuotaObservation> QuotaObservations { get; init; } = [];
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<UsageEvent> NativeCodexEvents { get; init; } = [];
+}
 public sealed record LocalModel(string Name, long SizeBytes, long VramBytes);
 public sealed record OllamaResult(IReadOnlyList<LocalModel> Models, string Status);
 

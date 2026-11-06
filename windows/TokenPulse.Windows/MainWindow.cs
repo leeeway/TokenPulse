@@ -48,7 +48,7 @@ internal sealed class MainWindow : Window
     internal bool HasRendered => renderedSnapshot is not null;
     public bool AllowClose { get; set; }
 
-    public MainWindow(Action refresh, Action settings, Action changeWindow)
+    public MainWindow(Action refresh, Action settings, Action changeWindow, Action? ledger = null)
     {
         openSettings = settings;
         Title = $"TokenPulse · {Ui.Version}"; Width = 468; Height = 740; MinWidth = 420; MinHeight = 500;
@@ -64,7 +64,7 @@ internal sealed class MainWindow : Window
             maximize.ToolTip = WindowState == WindowState.Maximized ? "还原窗口" : "最大化";
             System.Windows.Automation.AutomationProperties.SetName(maximize, (string)maximize.ToolTip);
         };
-        top.Children.Add(Ui.Header(this, "TokenPulse", "你的 AI 用量，一眼掌握", refreshButton, Ui.IconButton("\uE713", "偏好设置", settings), maximize));
+        top.Children.Add(Ui.Header(this, "TokenPulse", "你的 AI 用量，一眼掌握", refreshButton, Ui.IconButton("\uE9F9", "Codex 配额账本与周报", ledger ?? (() => { })), Ui.IconButton("\uE713", "偏好设置", settings), maximize));
         var segments = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1, Columns = 4 };
         string[] titles = ["今日", "近 7 天", "近 30 天", "全部"];
         for (var index = 0; index < titles.Length; index++)

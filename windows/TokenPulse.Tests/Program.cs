@@ -500,6 +500,8 @@ await Test("Pricing describes unknown models without changing compatibility tota
     Near(12.5, Pricing.Estimate(Providers.Codex, "gpt-6.1-sol", 1_000_000, 1_000_000, 1_000_000, 1_000_000).Cost);
 }));
 
+var ledgerResults = QuotaLedgerTests.Run();
+passed += ledgerResults.Passed; failures += ledgerResults.Failed;
 Console.WriteLine($"{passed} passed, {failures} failed.");
 return failures == 0 ? 0 : 1;
 

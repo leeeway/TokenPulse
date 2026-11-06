@@ -28,12 +28,21 @@ protocol DashboardCollecting: Sendable {
     var lastScanAt: Date? { get }
     var sourceWarnings: [String] { get }
     var ollamaStatus: String { get }
+    func ledgerInputForApp() -> CodexLedgerInput?
 }
 
-extension UsageCollector: DashboardCollecting { }
+extension DashboardCollecting {
+    func ledgerInputForApp() -> CodexLedgerInput? { nil }
+}
+
+extension UsageCollector: DashboardCollecting {
+    func ledgerInputForApp() -> CodexLedgerInput? { ledgerInputFromCache() }
+}
 
 @MainActor
 public final class AppViewModel: ObservableObject {
+    let ledger = LedgerViewModel()
+    private var ledgerWindow: LedgerWindowController?
     @Published public var selectedWindow: TimeWindow {
         didSet {
             guard selectedWindow != oldValue else { return }
@@ -138,12 +147,23 @@ public final class AppViewModel: ObservableObject {
         refreshTask = Task { [weak self] in
             // Run both sources concurrently; a slow Ollama query must not hold back log totals.
             async let models = collector.refreshOllamaModels()
-            await Task.detached(priority: .utility) { collector.refreshLogCache(now: now) }.value
+            let ledgerInput = await Task.detached(priority: .utility) {
+                collector.refreshLogCache(now: now)
+                return collector.ledgerInputForApp()
+            }.value
             self?.renderFromCache()
+            if let ledgerInput { self?.ledger.receive(ledgerInput) }
             _ = await models
             self?.renderFromCache()
             self?.isRefreshing = false
         }
+    }
+
+    func openLedger() {
+        if ledgerWindow == nil {
+            ledgerWindow = LedgerWindowController(model: ledger, refresh: { [weak self] in self?.refreshNow() })
+        }
+        ledgerWindow?.showLedger()
     }
 
     public func copyShareSummary() {

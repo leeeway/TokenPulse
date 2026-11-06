@@ -209,13 +209,103 @@ internal static class UiSnapshots
                 throw new InvalidOperationException("Invalid source path did not direct the user to data sources.");
         }
         finally { settings.Close(); }
+        await CaptureLedgerScenarios(directory);
         foreach (var warning in new[] { false, true })
         {
             using var icon = TrayIcon.CreateIcon(warning);
             using var bitmap = icon.ToBitmap();
             bitmap.Save(Path.Combine(directory, warning ? "tray-warning.png" : "tray-normal.png"), System.Drawing.Imaging.ImageFormat.Png);
         }
-        File.WriteAllText(Path.Combine(directory, "README.txt"), $"TokenPulse {Ui.Version}. Actual WPF renders with synthetic data, exported at 96 and 144 DPI. Wide cases explicitly measure the same visual tree at 1920/2560/3840 pixel viewports; maximized cases exercise real WindowState.Maximized on the CI desktop. Bounded content widths and horizontal centering are asserted for every capture. Maximize/restore and reopen-while-maximized are exercised. These do not replace physical mixed-DPI monitor testing. No user logs or settings were read or written.");
+        File.WriteAllText(Path.Combine(directory, "README.txt"), $"TokenPulse {Ui.Version}. Actual WPF renders with synthetic data, exported at 96 and 144 DPI. Wide cases explicitly measure the same visual tree at 1920/2560/3840 pixel viewports; maximized cases exercise real WindowState.Maximized on the CI desktop. Bounded content widths and horizontal centering are asserted for every capture. Maximize/restore and reopen-while-maximized are exercised. Ledger cases use isolated temporary JSON files and synthetic native Codex data, including empty, archived, unavailable, corrupt and narrow-window cases; temporary files are deleted afterward. These do not replace physical mixed-DPI monitor testing. No user logs or settings were read or written.");
+    }
+    private static async Task CaptureLedgerScenarios(string directory)
+    {
+        var temporary = Path.Combine(Path.GetTempPath(), "tokenpulse-ledger-ui-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temporary);
+        try
+        {
+            var now = DateTimeOffset.Parse("2026-10-21T15:41:03Z", System.Globalization.CultureInfo.InvariantCulture);
+            var start = DateTimeOffset.Parse("2026-10-20T07:07:27Z", System.Globalization.CultureInfo.InvariantCulture);
+            var end = start.AddDays(7);
+            var first = UsageEvent.Create("ledger-a", Providers.Codex, "gpt-6.1-sol", start.AddHours(1), "native-a", 1000, 0, 9000, 100, 20);
+            var second = UsageEvent.Create("ledger-b", Providers.Codex, "gpt-6-astra", now.AddHours(-1), "native-b", 2000, 500, 4000, 200, 30);
+            var old = UsageEvent.Create("ledger-old", Providers.Codex, "history-model", start.AddDays(-6), "native-old", 1000, 0, 0, 100);
+            var custom = UsageEvent.Create("custom-codex", Providers.Codex, "custom-not-native", now.AddMinutes(-1), "custom", 999_999, 0, 0, 0);
+            SourceStatus ready = new(Providers.Codex, @"C:\Users\Example\.codex\sessions", SourceState.Ready, "合成原生来源已就绪");
+            var scan = new ScanResult([first, second, old, custom], [], [ready])
+            {
+                NativeCodexEvents = [first, second, old],
+                QuotaObservations = [new(start.AddHours(1), "secondary", 10080, end, 70, "team"),
+                    new(now.AddHours(-2), "primary", 10080, end, 100, "team"),
+                    new(start.AddHours(-1), "secondary", 10080, start, 95, "team")]
+            };
+            var session = new QuotaLedgerSession(new QuotaLedgerStore(Path.Combine(temporary, "normal.json")));
+            session.Update(scan, true, now);
+            var window = new QuotaLedgerWindow(session);
+            try
+            {
+                await ShowAndCapture(window, directory, "quota-ledger-current");
+                if (!window.ShowInTaskbar || !Descendants<TextBlock>(window).Any(t => t.Text == "16.8K")
+                    || !Descendants<TextBlock>(window).Any(t => t.Text == "100%")
+                    || !Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("首次观测 100%")))
+                    throw new InvalidOperationException("Native ledger totals or quota observations are not displayed correctly.");
+                window.Width = 520; await ShowAndCapture(window, directory, "quota-ledger-narrow");
+                CaptureViewport(window, directory, "quota-ledger-wide-1920", new Size(1920, 1080));
+                window.Width = 880;
+                Descendants<RadioButton>(window).Single(r => Equals(r.Content, "历史账本")).IsChecked = true;
+                var cycles = Descendants<ComboBox>(window).Single(); cycles.SelectedIndex = 1;
+                await ShowAndCapture(window, directory, "quota-ledger-history");
+                if (!Descendants<TextBlock>(window).Any(t => t.Text == "历史归档快照"))
+                    throw new InvalidOperationException("Archived ledger cycle could not be selected.");
+                Descendants<RadioButton>(window).Single(r => Equals(r.Content, "自定义")).IsChecked = true;
+                var from = Descendants<TextBox>(window).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "开始本地时间");
+                var to = Descendants<TextBox>(window).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "结束本地时间 不包含");
+                from.Text = TimeZoneInfo.ConvertTime(now.AddHours(-4), TimeZoneInfo.Local).ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+                to.Text = TimeZoneInfo.ConvertTime(now, TimeZoneInfo.Local).ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+                var generate = Descendants<Button>(window).Single(b => Equals(b.Content, "生成自定义快照"));
+                generate.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                for (var retry = 0; retry < 200 && !generate.IsEnabled; retry++) await Task.Delay(10);
+                if (!generate.IsEnabled || !Descendants<TextBlock>(window).Any(t => t.Text == "自定义冻结快照"))
+                    throw new InvalidOperationException("Custom local-time range did not generate its frozen report.");
+                await ShowAndCapture(window, directory, "quota-ledger-custom");
+                Descendants<RadioButton>(window).Single(r => Equals(r.Content, "当前周期")).IsChecked = true;
+                var disabled = new ScanResult([], [], [ready with { State = SourceState.Disabled, Message = "已关闭 · 不扫描" }]);
+                session.Update(disabled, false, now); window.Refresh();
+                await ShowAndCapture(window, directory, "quota-ledger-source-disabled");
+                if (Descendants<Button>(window).Single(b => Equals(b.Content, "导出 HTML 与 CSV")).IsEnabled
+                    || !Descendants<TextBlock>(window).Any(t => t.Text.Contains("来源已关闭")))
+                    throw new InvalidOperationException("Disabled native source left a current report export enabled.");
+                session.Update(new([], [], [ready with { State = SourceState.Error, Message = "合成访问失败" }]), true, now);
+                window.Refresh(); await ShowAndCapture(window, directory, "quota-ledger-source-error");
+            }
+            finally { window.Close(); }
+            var emptySession = new QuotaLedgerSession(new QuotaLedgerStore(Path.Combine(temporary, "empty.json")));
+            emptySession.Update(new([], [], [ready]), true, now);
+            var emptyWindow = new QuotaLedgerWindow(emptySession);
+            try
+            {
+                await ShowAndCapture(emptyWindow, directory, "quota-ledger-empty");
+                if (Descendants<TextBlock>(emptyWindow).Any(t => t.Text == "0%")
+                    || !Descendants<TextBlock>(emptyWindow).Any(t => t.Text == "当前周配额尚无可靠记录"))
+                    throw new InvalidOperationException("Missing weekly quota was presented as zero percent.");
+            }
+            finally { emptyWindow.Close(); }
+            var corruptPath = Path.Combine(temporary, "corrupt.json"); const string damaged = "{ invalid ledger";
+            File.WriteAllText(corruptPath, damaged);
+            var corruptSession = new QuotaLedgerSession(new QuotaLedgerStore(corruptPath));
+            corruptSession.Update(scan, true, now);
+            var corruptWindow = new QuotaLedgerWindow(corruptSession);
+            try
+            {
+                await ShowAndCapture(corruptWindow, directory, "quota-ledger-corrupt");
+                if (Descendants<Button>(corruptWindow).Single(b => Equals(b.Content, "清空已结束历史")).IsEnabled
+                    || !Descendants<Button>(corruptWindow).Single(b => Equals(b.Content, "从现存日志重建")).IsEnabled
+                    || File.ReadAllText(corruptPath) != damaged)
+                    throw new InvalidOperationException("Corrupt ledger was overwritten or recovery controls are invalid.");
+            }
+            finally { corruptWindow.Close(); }
+        }
+        finally { Directory.Delete(temporary, recursive: true); }
     }
     private static async Task ShowAndCapture(Window window, string directory, string name)
     {
@@ -252,7 +342,7 @@ internal static class UiSnapshots
     }
     private static void Save(FrameworkElement root, string directory, string name)
     {
-        var panel = Descendants<FrameworkElement>(root).Single(e => e.Name is "DashboardContent" or "SettingsContent");
+        var panel = Descendants<FrameworkElement>(root).Single(e => e.Name is "DashboardContent" or "SettingsContent" or "QuotaLedgerContent");
         var bounds = panel.TransformToAncestor(root).TransformBounds(new Rect(panel.RenderSize));
         if (panel.ActualWidth > panel.MaxWidth + 1 || panel.ActualHeight > panel.MaxHeight + 1
             || Math.Abs((bounds.Left + bounds.Right) / 2 - root.ActualWidth / 2) > 2)

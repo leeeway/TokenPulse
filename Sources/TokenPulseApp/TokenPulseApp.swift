@@ -26,6 +26,7 @@ struct TokenPulseMainApp: App {
             .accessibilityLabel("TokenPulse AI 用量")
         }
         .menuBarExtraStyle(.window)
+
     }
 }
 
@@ -335,6 +336,15 @@ struct DashboardPopoverView: View {
                 .help(viewModel.statusHelp)
 
             Spacer()
+
+            Button {
+                viewModel.openLedger()
+            } label: {
+                Image(systemName: "book.closed")
+            }
+            .buttonStyle(.borderless)
+            .help("配额账本与周报")
+            .accessibilityLabel("打开配额账本与周报")
 
             Button("退出") {
                 NSApplication.shared.terminate(nil)
