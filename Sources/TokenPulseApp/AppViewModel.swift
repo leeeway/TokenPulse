@@ -68,6 +68,7 @@ public final class AppViewModel: ObservableObject {
     private let defaults: UserDefaults
     private let clock: @Sendable () -> Date
     private var driver: BackgroundRefreshDriver?
+    private var dashboardVisible = false
     private var eventTask: Task<Void, Never>?
     private var pendingRefresh = false
     private var pendingForce = false
@@ -161,6 +162,8 @@ public final class AppViewModel: ObservableObject {
     func refreshAutomatically() { refresh(forceOllama: false) }
 
     func dashboardVisibilityChanged(_ visible: Bool) {
+        guard visible != dashboardVisible else { return }
+        dashboardVisible = visible
         driver?.setVisible(visible)
         if visible { refreshNow() }
     }

@@ -57,8 +57,7 @@ struct DashboardPopoverView: View {
         }
         .padding(14)
         .background(Color(NSColor.windowBackgroundColor))
-        .onAppear { viewModel.dashboardVisibilityChanged(true) }
-        .onDisappear { viewModel.dashboardVisibilityChanged(false) }
+        .background(DashboardVisibilityObserver { visible in viewModel.dashboardVisibilityChanged(visible) })
     }
 
     // MARK: - Header

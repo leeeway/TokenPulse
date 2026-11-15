@@ -57,8 +57,8 @@ final class LogChangeMonitor {
                 if let pointer { Unmanaged<Callback>.fromOpaque(pointer).release() }
             }, copyDescription: nil)
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot)
-        // Capture a concrete cursor before registering. SinceNow is evaluated by
-        // the daemon later and can miss writes during stream startup/replacement.
+        // Capture a concrete cursor before registering so startup/replacement
+        // can replay changes that arrive while the listener connects.
         let since = FSEventsGetCurrentEventId()
         stream = FSEventStreamCreate(nil, { _, info, count, paths, flags, _ in
             guard let info else { return }
