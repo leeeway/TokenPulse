@@ -44,16 +44,25 @@ private enum SourceAccess {
 
 /// Shared ISO8601 date parser supporting fractional and non-fractional seconds.
 public enum LogDateParser {
+    // ISO8601DateFormatter lazily builds an expensive ICU formatter. Keep two
+    // instances for all rows rather than rebuilding one or two for every date.
+    // The lock also protects callers scanning different adapters concurrently.
+    private final class Parser: @unchecked Sendable {
+        let lock = NSLock()
+        let fractional = ISO8601DateFormatter()
+        let basic = ISO8601DateFormatter()
+        init() {
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            basic.formatOptions = [.withInternetDateTime]
+        }
+        func parse(_ raw: String) -> Date? {
+            lock.withLock { fractional.date(from: raw) ?? basic.date(from: raw) }
+        }
+    }
+    private static let parser = Parser()
     public static func parse(_ raw: String?) -> Date? {
         guard let raw, !raw.isEmpty else { return nil }
-        let isoFrac = ISO8601DateFormatter()
-        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = isoFrac.date(from: raw) {
-            return d
-        }
-        let isoBasic = ISO8601DateFormatter()
-        isoBasic.formatOptions = [.withInternetDateTime]
-        return isoBasic.date(from: raw)
+        return parser.parse(raw)
     }
 }
 

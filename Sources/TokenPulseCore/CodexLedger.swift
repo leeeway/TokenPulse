@@ -56,11 +56,17 @@ public struct LedgerUsageTotals: Codable, Sendable, Equatable {
     static func build(_ items: [TokenUsageEvent]) -> Self {
         var result = Self()
         var sessions = Set<String>()
+        var rates: [String: PricingEngine.ModelRate] = [:]
         for event in items {
             result.inputTokens += event.inputTokens; result.cacheWriteTokens += event.cacheWriteTokens
             result.cacheReadTokens += event.cacheReadTokens; result.outputTokens += event.outputTokens
             result.reasoningTokens += event.reasoningTokens; result.estimatedUSD += event.costUSD
-            let rate = PricingEngine.rate(for: .codex, model: event.model)
+            let rate: PricingEngine.ModelRate
+            if let cached = rates[event.model] { rate = cached }
+            else {
+                rate = PricingEngine.rate(for: .codex, model: event.model)
+                rates[event.model] = rate
+            }
             result.inputCostUSD += Double(event.inputTokens) * rate.inputPerMillion / 1e6
             result.cacheWriteCostUSD += Double(event.cacheWriteTokens) * rate.cacheWritePerMillion / 1e6
             result.cacheReadCostUSD += Double(event.cacheReadTokens) * rate.cacheReadPerMillion / 1e6
@@ -127,30 +133,56 @@ public enum LedgerReportError: Error, LocalizedError {
 
 public enum CodexLedgerEngine {
     public static func currentReport(input: CodexLedgerInput, now: Date = Date(), timeZone: TimeZone = .current) -> UsageReportSnapshot? {
-        reports(input: input, now: now, timeZone: timeZone)
-            .filter { $0.startAt <= now && $0.endAt > now }
-            .max { ($0.quotaRecordedAt ?? .distantPast, $0.endAt) < ($1.quotaRecordedAt ?? .distantPast, $1.endAt) }
+        let groups = weeklyGroups(input: input, now: now)
+        // Select the cycle from observations before aggregating any events. Historical
+        // cycles are irrelevant to the current view, even when their logs still exist.
+        let latest = groups.values.compactMap { $0.max(by: observationOrder) }
+            .filter { $0.inferredStart < now && $0.resetsAt > now }
+            .max {
+                if $0.observedAt != $1.observedAt { return $0.observedAt < $1.observedAt }
+                return $0.resetsAt < $1.resetsAt
+            }
+        guard let latest, let group = groups[latest.resetsAt] else { return nil }
+        return weeklyReport(input: input, group: group, ends: Array(groups.keys), now: now, timeZone: timeZone)
     }
 
     public static func reports(input: CodexLedgerInput, now: Date = Date(), timeZone: TimeZone = .current) -> [UsageReportSnapshot] {
-        guard input.sourceAvailable else { return [] }
-        let observations = input.observations.filter { $0.isValidWeeklyObservation && $0.observedAt <= now && $0.resetsAt > now.addingTimeInterval(-90 * 86400) }
-        let groups = Dictionary(grouping: observations, by: { $0.resetsAt })
+        reports(input: input, now: now, timeZone: timeZone, excludingReportIDs: [], endingAfter: .distantPast)
+    }
+
+    // Persistence can discard immutable/cleared cycles before doing expensive totals.
+    static func reports(input: CodexLedgerInput, now: Date, timeZone: TimeZone,
+                        excludingReportIDs: Set<String>, endingAfter: Date) -> [UsageReportSnapshot] {
+        let groups = weeklyGroups(input: input, now: now)
         let ends = groups.keys.sorted()
         return ends.compactMap { end in
-            guard let group = groups[end], let latest = group.sorted(by: observationOrder).last else { return nil }
-            let start = latest.inferredStart
-            guard start < now else { return nil }
-            var warnings = input.warnings
-            if Set(group.compactMap { $0.planType }.filter { !$0.isEmpty }).count > 1 {
-                warnings.append("同一周期观测到多个套餐标识，不能据此推断账号归属。")
-            }
-            if ends.contains(where: { $0 != end && $0 > start && $0.addingTimeInterval(-604800) < end }) {
-                warnings.append("存在重叠或冲突的周周期；按本条重置记录推定，不合并候选周期或跨周期金额。")
-            }
-            return build(input: input, start: start, end: end, now: now, timeZone: timeZone, kind: .weekly,
-                         observation: latest, warnings: warnings)
+            guard end > endingAfter, !excludingReportIDs.contains(weeklyID(end)), let group = groups[end] else { return nil }
+            return weeklyReport(input: input, group: group, ends: ends, now: now, timeZone: timeZone)
         }.sorted { $0.endAt > $1.endAt }
+    }
+
+    private static func weeklyID(_ end: Date) -> String { "codex-weekly-\(Int(end.timeIntervalSince1970))" }
+
+    private static func weeklyGroups(input: CodexLedgerInput, now: Date) -> [Date: [QuotaObservation]] {
+        guard input.sourceAvailable else { return [:] }
+        return Dictionary(grouping: input.observations.filter {
+            $0.isValidWeeklyObservation && $0.observedAt <= now && $0.resetsAt > now.addingTimeInterval(-90 * 86400)
+        }, by: { $0.resetsAt })
+    }
+
+    private static func weeklyReport(input: CodexLedgerInput, group: [QuotaObservation], ends: [Date],
+                                     now: Date, timeZone: TimeZone) -> UsageReportSnapshot? {
+        guard let latest = group.max(by: observationOrder), latest.inferredStart < now else { return nil }
+        let start = latest.inferredStart, end = latest.resetsAt
+        var warnings = input.warnings
+        if Set(group.compactMap { $0.planType }.filter { !$0.isEmpty }).count > 1 {
+            warnings.append("同一周期观测到多个套餐标识，不能据此推断账号归属。")
+        }
+        if ends.contains(where: { $0 != end && $0 > start && $0.addingTimeInterval(-604800) < end }) {
+            warnings.append("存在重叠或冲突的周周期；按本条重置记录推定，不合并候选周期或跨周期金额。")
+        }
+        return build(input: input, start: start, end: end, now: now, timeZone: timeZone, kind: .weekly,
+                     observation: latest, warnings: warnings)
     }
 
     public static func customReport(input: CodexLedgerInput, start: Date, end: Date, now: Date = Date(), timeZone: TimeZone = .current) throws -> UsageReportSnapshot {
@@ -193,7 +225,7 @@ public enum CodexLedgerEngine {
         var notes = warnings
         if unknown > 0 { notes.append("\(unknown) 条记录时间未知，已排除，不使用文件修改时间确定周期归属。") }
         notes.append("仅覆盖本机可读取的原生 Codex 日志，包含自动审批模型；不能视为账户完整账单或套餐固定美元额度。")
-        return UsageReportSnapshot(id: kind == .weekly ? "codex-weekly-\(Int(end.timeIntervalSince1970))" : "codex-custom-\(Int(start.timeIntervalSince1970))-\(Int(end.timeIntervalSince1970))",
+        return UsageReportSnapshot(id: kind == .weekly ? weeklyID(end) : "codex-custom-\(Int(start.timeIntervalSince1970))-\(Int(end.timeIntervalSince1970))",
             kind: kind, startAt: start, endAt: end, cutoffAt: cutoff, generatedAt: now,
             timeZoneIdentifier: timeZone.identifier, timeZoneOffsetSeconds: timeZone.secondsFromGMT(for: now),
             totals: .build(events), models: models, days: days, quotaUsedPercent: observation?.usedPercent,

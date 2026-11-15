@@ -63,6 +63,65 @@ struct CodexLedgerTests {
         #expect(report.cycleStartInferred && report.pricingVersion == "compat-v1")
     }
 
+    @Test func currentSelectionAndArchivedExclusionPreserveConflictWarnings() throws {
+        let previousEnd = cycleEnd.addingTimeInterval(-604800)
+        let overlappingEnd = cycleEnd.addingTimeInterval(3600)
+        let input = CodexLedgerInput(events: fixtureInput().events, observations: [
+            quota(at: previousEnd.addingTimeInterval(-3600), end: previousEnd, percent: 70),
+            quota(at: reportNow.addingTimeInterval(-1), end: overlappingEnd, percent: 10),
+            quota(at: reportNow.addingTimeInterval(-2), percent: 90),
+            quota(at: reportNow.addingTimeInterval(-1), percent: 95)
+        ], sourceAvailable: true)
+        let zone = TimeZone(secondsFromGMT: 0)!
+        let all = CodexLedgerEngine.reports(input: input, now: reportNow, timeZone: zone)
+        let current = try #require(CodexLedgerEngine.currentReport(input: input, now: reportNow, timeZone: zone))
+        // Equal observation times prefer the later reset, as before the optimization.
+        #expect(current.endAt == overlappingEnd)
+        #expect(current == all.first { $0.id == current.id })
+        let skippedIDs = Set(all.filter { $0.endAt != cycleEnd }.map(\.id))
+        let remaining = CodexLedgerEngine.reports(input: input, now: reportNow, timeZone: zone,
+            excludingReportIDs: skippedIDs, endingAfter: previousEnd)
+        #expect(remaining == all.filter { $0.endAt == cycleEnd })
+        #expect(remaining.first?.warnings.contains { $0.contains("重叠") } == true)
+        #expect(CodexLedgerEngine.reports(input: input, now: reportNow, timeZone: zone,
+            excludingReportIDs: [], endingAfter: overlappingEnd).isEmpty)
+    }
+
+    @Test func cachedRatesPreserveMixedModelComponentCostsAndStoredAmounts() throws {
+        let rates = ["opus", "gpt-5", "haiku", "sonnet"]
+        var events: [TokenUsageEvent] = []
+        for index in 0..<80 {
+            let event = TokenUsageEvent(id: "m\(index)", provider: .codex, model: rates[index % rates.count],
+                timestamp: reportNow.addingTimeInterval(-Double(index + 1)), sessionId: "s\(index % 3)",
+                inputTokens: 1000, cacheWriteTokens: 50, cacheReadTokens: 9000, outputTokens: 100,
+                costUSD: Double(index) / 1000, savedByCacheUSD: Double(index) / 2000)
+            events.append(event)
+        }
+        let report = try CodexLedgerEngine.customReport(input: CodexLedgerInput(events: events, sourceAvailable: true),
+            start: cycleStart, end: reportNow, now: reportNow)
+        #expect(abs(report.totals.estimatedUSD - events.reduce(0) { $0 + $1.costUSD }) < 1e-12)
+        #expect(abs(report.totals.cacheSavedUSD - events.reduce(0) { $0 + $1.savedByCacheUSD }) < 1e-12)
+        let expectedInput = events.reduce(0.0) { $0 + Double($1.inputTokens) * PricingEngine.rate(for: .codex, model: $1.model).inputPerMillion / 1e6 }
+        #expect(abs(report.totals.inputCostUSD - expectedInput) < 1e-12)
+        #expect(report.totals.sessions == 3 && report.totals.events == 80)
+    }
+
+    @Test func sharedDateParserSupportsOffsetsFractionsAndConcurrentScans() async {
+        let expected = instant("2026-10-21T10:00:00Z")
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<24 {
+                group.addTask {
+                    for text in ["2026-10-21T10:00:00Z", "2026-10-21T10:00:00.000Z", "2026-10-21T18:00:00+08:00"] {
+                        #expect(LogDateParser.parse(text) == expected)
+                    }
+                    #expect(LogDateParser.parse("broken") == nil)
+                }
+            }
+        }
+        #expect(LogDateParser.parse(nil) == nil)
+        #expect(LogDateParser.parse("") == nil)
+    }
+
     @Test func strictQuotaNeedsEveryOriginalFieldAndAcceptsEitherWindowRole() throws {
         let temp = try LedgerTestDirectory(); defer { temp.remove() }
         let file = temp.url.appendingPathComponent("quota.jsonl")

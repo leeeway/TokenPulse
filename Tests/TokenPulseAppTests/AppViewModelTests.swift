@@ -32,6 +32,8 @@ private final class ControlledCollector: DashboardCollecting, @unchecked Sendabl
     let modelGate: ModelGate?
     let sourceWarnings: [String]
     private var scanned = false
+    private var renders = 0
+    var renderCount: Int { lock.withLock { renders } }
     private var sevenStarted = false
     private var sevenFinished = false
     var lastScanAt: Date? { lock.withLock { scanned ? now : nil } }
@@ -49,6 +51,7 @@ private final class ControlledCollector: DashboardCollecting, @unchecked Sendabl
         lock.withLock { scanned = true }
     }
     func snapshotFromCache(window: TimeWindow, now: Date) -> DashboardSnapshot {
+        lock.withLock { renders += 1 }
         if window == .sevenDays, let sevenDayGate {
             lock.withLock { sevenStarted = true }
             _ = sevenDayGate.wait(timeout: .now() + 5)
@@ -122,6 +125,24 @@ struct AppViewModelTests {
         } catch { await gate.release(); throw error }
         await gate.release()
         try await eventually { !model.isRefreshing }
+    }
+
+    @Test @MainActor
+    func unchangedOllamaDoesNotRepeatTheDashboardAggregation() async throws {
+        let suite = "TokenPulse.Tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let gate = ModelGate()
+        let collector = ControlledCollector(modelGate: gate)
+        let model = AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false, clock: { collector.now })
+        model.refreshNow()
+        do {
+            try await eventually { model.lastScanAt != nil && model.snapshot.grandTotalTokens == 110 }
+            #expect(collector.renderCount == 1)
+        } catch { await gate.release(); throw error }
+        await gate.release()
+        try await eventually { !model.isRefreshing }
+        #expect(collector.renderCount == 1)
     }
 
     @Test @MainActor

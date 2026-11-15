@@ -153,8 +153,10 @@ public final class AppViewModel: ObservableObject {
             }.value
             self?.renderFromCache()
             if let ledgerInput { self?.ledger.receive(ledgerInput) }
-            _ = await models
-            self?.renderFromCache()
+            let refreshedModels = await models
+            if let self, refreshedModels != snapshot.runningLocalModels || collector.ollamaStatus != ollamaStatus {
+                renderFromCache()
+            }
             self?.isRefreshing = false
         }
     }

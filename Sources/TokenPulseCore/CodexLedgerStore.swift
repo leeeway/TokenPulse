@@ -76,7 +76,9 @@ public final class CodexLedgerStore: @unchecked Sendable {
         let retainAfter = now.addingTimeInterval(-90 * 86400)
         var entries = Dictionary(uniqueKeysWithValues: envelope.reports.filter { $0.endAt > retainAfter }.map { ($0.id, $0) })
         // Closed summaries are immutable until an explicit rebuild. Late log removal cannot erase them.
-        let candidates = CodexLedgerEngine.reports(input: input, now: now, timeZone: timeZone)
+        let archivedIDs = Set(entries.values.filter(\.archived).map(\.id))
+        let candidates = CodexLedgerEngine.reports(input: input, now: now, timeZone: timeZone,
+            excludingReportIDs: archivedIDs, endingAfter: max(retainAfter, envelope.clearedAt ?? .distantPast))
         for var report in candidates where report.endAt > retainAfter {
             if report.endAt <= (envelope.clearedAt ?? .distantPast) { continue }
             if let saved = entries[report.id], saved.archived { continue }
@@ -92,14 +94,21 @@ public final class CodexLedgerStore: @unchecked Sendable {
         var warning: String?
         do { try persistIfChanged() }
         catch { warning = "本地账本保存失败，当前统计仍可查看：\(error.localizedDescription)" }
-        return stateLocked(input: input, now: now, timeZone: timeZone, warning: warning)
+        return stateLocked(input: input, now: now, timeZone: timeZone, warning: warning, preparedReports: candidates)
     }
 
-    private func stateLocked(input: CodexLedgerInput, now: Date, timeZone: TimeZone, warning: String?) -> LedgerViewState {
+    private func stateLocked(input: CodexLedgerInput, now: Date, timeZone: TimeZone, warning: String?,
+                             preparedReports: [UsageReportSnapshot]? = nil) -> LedgerViewState {
         var warnings = input.warnings
         if let warning { warnings.append(warning) }
         if !input.sourceAvailable { warnings.append("Codex 原生日志不可用，本轮统计未更新；历史本地归档继续保留。") }
-        let current = CodexLedgerEngine.currentReport(input: input, now: now, timeZone: timeZone)
+        let current: UsageReportSnapshot?
+        if let preparedReports {
+            current = preparedReports.filter { $0.startAt <= now && $0.endAt > now }
+                .max { ($0.quotaRecordedAt ?? .distantPast, $0.endAt) < ($1.quotaRecordedAt ?? .distantPast, $1.endAt) }
+        } else {
+            current = CodexLedgerEngine.currentReport(input: input, now: now, timeZone: timeZone)
+        }
         let history = envelope.reports.filter { $0.endAt <= now && $0.endAt > now.addingTimeInterval(-90 * 86400) }
             .sorted { $0.endAt > $1.endAt }
         lastState = LedgerViewState(current: current, history: history,
