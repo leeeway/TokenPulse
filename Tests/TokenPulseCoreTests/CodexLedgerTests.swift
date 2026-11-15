@@ -122,6 +122,34 @@ struct CodexLedgerTests {
         #expect(LogDateParser.parse("") == nil)
     }
 
+    @Test func byteFilteredCodexLogsPreserveLineIDsModelsAndPartialAppends() throws {
+        let temp = try LedgerTestDirectory(); defer { temp.remove() }
+        let file = temp.url.appendingPathComponent("中文日志.jsonl")
+        func row(_ payload: [String: Any]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["timestamp": "2026-10-21T10:00:00Z", "payload": payload])
+        }
+        let ignored = try row(["type": "message", "text": String(repeating: "普通中文对话🧪", count: 1000) + "\u{2028}后续文本"])
+        let settings = try row(["type": "thread_settings_applied", "thread_settings": ["model": "gpt-5"]])
+        let usage = try row(["type": "token_count", "info": ["total_token_usage": ["input_tokens": 100, "output_tokens": 10]]])
+        var data = ignored; data.append(contentsOf: [13, 10, 13, 10])
+        data.append(settings); data.append(contentsOf: [13, 10]); data.append(usage)
+        data.append(contentsOf: [13, 10]); data.append(Data("{\"payload\":{\"type\":\"token_count\"".utf8))
+        try data.write(to: file)
+        let adapter = CodexAdapter(baseDirectory: temp.url)
+        let first = adapter.scan()
+        #expect(first.events.count == 1)
+        #expect(first.events.first?.id == "codex-中文日志-4")
+        #expect(first.events.first?.model == "gpt-5" && first.events.first?.totalTokens == 110)
+        #expect(adapter.scan().events.count == 1)
+        // A damaged row does not prevent later valid JSONL rows from being read.
+        data.append(contentsOf: [10, 0xFF, 10]); data.append(try row(["type": "token_count", "info": ["total_token_usage": ["input_tokens": 150, "output_tokens": 20]]]))
+        try data.write(to: file)
+        let appended = adapter.scan()
+        #expect(appended.events.count == 2 && appended.events.reduce(0) { $0 + $1.totalTokens } == 170)
+        try usage.write(to: file)
+        #expect(adapter.scan().events.count == 1)
+    }
+
     @Test func strictQuotaNeedsEveryOriginalFieldAndAcceptsEitherWindowRole() throws {
         let temp = try LedgerTestDirectory(); defer { temp.remove() }
         let file = temp.url.appendingPathComponent("quota.jsonl")

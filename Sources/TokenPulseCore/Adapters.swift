@@ -260,7 +260,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
     }
 
     public static func parseDetailedRolloutFile(at url: URL, fallbackDate: Date = Date()) -> CodexParsedLog {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+        guard let content = try? Data(contentsOf: url) else {
             return CodexParsedLog(events: [], rateLimit: nil, observations: [], readSucceeded: false)
         }
 
@@ -276,10 +276,13 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         var lineIndex = 0
         var observations: [QuotaObservation] = []
 
-        content.enumerateLines { line, _ in
+        // Most bytes are conversation text. ASCII markers can be checked directly,
+        // without decoding every line or invoking Unicode-aware string searches.
+        let usageMarker = Data("\"token_count\"".utf8)
+        let settingsMarker = Data("\"thread_settings_applied\"".utf8)
+        content.split(separator: 0x0A, omittingEmptySubsequences: false).forEach { data in
             lineIndex += 1
-            guard line.contains("\"token_count\"") || line.contains("\"thread_settings_applied\""),
-                  let data = line.data(using: .utf8),
+            guard data.range(of: usageMarker) != nil || data.range(of: settingsMarker) != nil,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let payload = json["payload"] as? [String: Any],
                   let payloadType = payload["type"] as? String else {
@@ -380,7 +383,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
                     cacheReadTokens: deltaCached,
                     outputTokens: deltaOutput,
                     reasoningTokens: deltaReasoning,
-                    hasKnownTimestamp: LogDateParser.parse(json["timestamp"] as? String) != nil
+                    hasKnownTimestamp: genuineTimestamp != nil
                 )
             )
         }
