@@ -18,14 +18,17 @@ private final class MockOllamaProtocol: URLProtocol, @unchecked Sendable {
     final class Responses: @unchecked Sendable {
         let lock = NSLock()
         var entries: [(Int, String)] = []
-        func set(_ values: [(Int, String)]) { lock.withLock { entries = values } }
-        func next() -> (Int, String) { lock.withLock { entries.isEmpty ? (500, "{}") : entries.removeFirst() } }
+        private var calls = 0
+        var count: Int { lock.withLock { calls } }
+        func set(_ values: [(Int, String)]) { lock.withLock { entries = values; calls = 0 } }
+        func next() -> (Int, String) { lock.withLock { calls += 1; return entries.isEmpty ? (500, "{}") : entries.removeFirst() } }
     }
     static let responses = Responses()
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "127.0.0.1" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let (status, body) = Self.responses.next()
+        if status == -1 { client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost)); return }
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
@@ -34,7 +37,7 @@ private final class MockOllamaProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() { }
 }
 
-@Suite("Mac correctness regressions")
+@Suite("Mac correctness regressions", .serialized)
 struct MacRegressionTests {
     @Test
     func undatedHistoryCannotBecomeRecentAfterAppendCacheOrRestart() throws {
@@ -117,6 +120,34 @@ struct MacRegressionTests {
             #expect(await collector.refreshOllamaModels().isEmpty)
             #expect(collector.snapshotFromCache(window: .today).runningLocalModels.isEmpty)
         }
+    }
+
+    @Test
+    func ollamaBackgroundFailuresBackOffAndSuccessOrManualRefreshRecover() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockOllamaProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let collector = UsageCollector(adapters: [], customEventsURL: missing, ollamaSession: session)
+        let success = "{\"models\":[{\"name\":\"test-model\"}]}"
+        MockOllamaProtocol.responses.set([(-1, ""), (503, "{}"), (200, success), (200, "{\"models\":[]}"), (200, success)])
+        let now = Date(timeIntervalSince1970: 1800000000)
+        _ = await collector.refreshOllamaModelsIfDue(now: now)
+        #expect(MockOllamaProtocol.responses.count == 1)
+        _ = await collector.refreshOllamaModelsIfDue(now: now.addingTimeInterval(29))
+        #expect(MockOllamaProtocol.responses.count == 1)
+        _ = await collector.refreshOllamaModelsIfDue(now: now.addingTimeInterval(30))
+        #expect(MockOllamaProtocol.responses.count == 2)
+        _ = await collector.refreshOllamaModelsIfDue(now: now.addingTimeInterval(89))
+        #expect(MockOllamaProtocol.responses.count == 2)
+        #expect(await collector.refreshOllamaModelsIfDue(now: now.addingTimeInterval(90)).count == 1)
+        _ = await collector.refreshOllamaModelsIfDue(now: now.addingTimeInterval(104))
+        #expect(MockOllamaProtocol.responses.count == 3)
+        #expect(await collector.refreshOllamaModelsIfDue(now: now.addingTimeInterval(105)).isEmpty)
+        #expect(MockOllamaProtocol.responses.count == 4)
+        #expect(await collector.refreshOllamaModelsIfDue(now: now.addingTimeInterval(106), force: true).count == 1)
+        #expect(MockOllamaProtocol.responses.count == 5)
     }
 
     @Test

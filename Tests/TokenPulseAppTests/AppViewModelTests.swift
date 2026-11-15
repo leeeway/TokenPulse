@@ -31,6 +31,10 @@ private final class ControlledCollector: DashboardCollecting, @unchecked Sendabl
     let sevenDayGate: DispatchSemaphore?
     let modelGate: ModelGate?
     let sourceWarnings: [String]
+    private var scans = 0
+    private var pollForces: [Bool] = []
+    var scanCount: Int { lock.withLock { scans } }
+    var requestedPollForces: [Bool] { lock.withLock { pollForces } }
     private var scanned = false
     private var renders = 0
     var renderCount: Int { lock.withLock { renders } }
@@ -47,6 +51,7 @@ private final class ControlledCollector: DashboardCollecting, @unchecked Sendabl
         sourceWarnings = warnings
     }
     func refreshLogCache(now: Date) {
+        lock.withLock { scans += 1 }
         _ = scanGate?.wait(timeout: .now() + 5)
         lock.withLock { scanned = true }
     }
@@ -65,6 +70,10 @@ private final class ControlledCollector: DashboardCollecting, @unchecked Sendabl
         return UsageCollector.buildSnapshot(allEvents: [event], rateLimits: [:], runningLocalModels: [], window: window, now: now)
     }
     func refreshOllamaModels() async -> [LocalRunningModel] { await modelGate?.wait(); return [] }
+    func refreshOllamaModelsIfDue(now: Date, force: Bool) async -> [LocalRunningModel] {
+        lock.withLock { pollForces.append(force) }
+        return await refreshOllamaModels()
+    }
 }
 
 @Suite("Mac dashboard refresh and preferences")
@@ -120,7 +129,7 @@ struct AppViewModelTests {
             try await eventually { model.lastScanAt != nil && model.snapshot.grandTotalTokens == 110 }
             #expect(model.isRefreshing)
             #expect(model.dataStatus(at: collector.now) == "需检查")
-            #expect(model.dataStatus(at: collector.now.addingTimeInterval(31)) == "待刷新")
+            #expect(model.dataStatus(at: collector.now.addingTimeInterval(76)) == "待刷新")
             #expect(model.statusHelp.contains("测试目录不可读取"))
         } catch { await gate.release(); throw error }
         await gate.release()
@@ -143,6 +152,48 @@ struct AppViewModelTests {
         await gate.release()
         try await eventually { !model.isRefreshing }
         #expect(collector.renderCount == 1)
+    }
+
+    @Test @MainActor
+    func refreshDuringScanQueuesOneFollowUpAndManualActionsBypassBackoff() async throws {
+        let suite = "TokenPulse.Tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal(); gate.signal() }
+        let collector = ControlledCollector(scanGate: gate)
+        let model = AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false,
+            clock: { collector.now }, eventMinimumInterval: 0)
+        model.refreshAutomatically()
+        try await eventually { collector.scanCount == 1 }
+        for _ in 0..<20 { model.refreshAutomatically() }
+        model.refreshNow()
+        gate.signal()
+        try await eventually { collector.scanCount == 2 }
+        gate.signal()
+        try await eventually { !model.isRefreshing }
+        #expect(collector.scanCount == 2)
+        #expect(collector.requestedPollForces == [false, true])
+        model.dashboardVisibilityChanged(false)
+        #expect(collector.scanCount == 2)
+        model.dashboardVisibilityChanged(true)
+        try await eventually { collector.scanCount == 3 }
+        gate.signal()
+        try await eventually { !model.isRefreshing }
+        #expect(collector.requestedPollForces.last == true)
+    }
+
+    @Test @MainActor
+    func fileEventBurstProducesOneRefresh() async throws {
+        let suite = "TokenPulse.Tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let collector = ControlledCollector()
+        let model = AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false,
+            clock: { collector.now }, eventMinimumInterval: 0)
+        for _ in 0..<30 { model.logsDidChange() }
+        try await eventually { collector.scanCount == 1 && !model.isRefreshing }
+        #expect(collector.requestedPollForces == [false])
     }
 
     @Test @MainActor

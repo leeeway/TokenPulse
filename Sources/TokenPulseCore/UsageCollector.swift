@@ -6,6 +6,12 @@ public final class UsageCollector: @unchecked Sendable {
     private let customEventsURL: URL
     private let lock = NSLock()
     private var cachedAllEvents: [TokenUsageEvent] = []
+    private let customCache = IncrementalJSONL<[TokenUsageEvent]>()
+    private var sourceRevisions: [UInt64]?
+    private var nextOllamaPollAt = Date.distantPast
+    private var ollamaFailures = 0
+    private var ollamaInFlight = false
+    public var logWatchDirectories: [URL] { adapters.compactMap(\.watchDirectory) + [customEventsURL.deletingLastPathComponent()] }
     private var cachedRateLimits: [AIProvider: RateLimitSnapshot] = [:]
     private var cachedLedgerInput = CodexLedgerInput.empty()
     private var cachedLocalModels: [LocalRunningModel] = []
@@ -64,20 +70,16 @@ public final class UsageCollector: @unchecked Sendable {
         }
         lock.lock()
         cachedAllEvents.append(event)
+        sourceRevisions = nil
         lock.unlock()
     }
 
     private func loadCustomEvents() -> [TokenUsageEvent] {
-        guard let content = try? String(contentsOf: customEventsURL, encoding: .utf8) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        var list: [TokenUsageEvent] = []
-        content.enumerateLines { line, _ in
-            guard let data = line.data(using: .utf8),
-                  let ev = try? decoder.decode(TokenUsageEvent.self, from: data) else { return }
-            list.append(ev)
-        }
-        return list
+        return customCache.read(at: customEventsURL, initial: []) { events, data, _, _ in
+            if let event = try? decoder.decode(TokenUsageEvent.self, from: data) { events.append(event) }
+        }.state
     }
 
     /// Scans all adapters and returns a fresh `DashboardSnapshot` for the requested time window.
@@ -90,10 +92,13 @@ public final class UsageCollector: @unchecked Sendable {
     public func refreshLogCache(now: Date = Date()) {
         var events: [TokenUsageEvent] = []
         var rateLimits: [AIProvider: RateLimitSnapshot] = [:]
+        var revisions: [UInt64] = []
+        var cacheable = true
         var nativeLedger = CodexLedgerInput.empty(scannedAt: now)
 
         for adapter in adapters {
             let result = adapter.scan()
+            if let revision = result.contentRevision { revisions.append(revision) } else { cacheable = false }
             events.append(contentsOf: result.events)
             if adapter.provider == .codex, let ledger = result.ledgerInput {
                 nativeLedger = CodexLedgerInput(events: ledger.events, observations: ledger.observations,
@@ -105,10 +110,13 @@ public final class UsageCollector: @unchecked Sendable {
         }
 
         events.append(contentsOf: loadCustomEvents())
-        events.sort { $0.timestamp > $1.timestamp }
+        revisions.append(customCache.revision)
+        let unchanged = cacheable && lock.withLock { sourceRevisions == revisions }
+        if !unchanged { events.sort { $0.timestamp > $1.timestamp } }
 
         lock.lock()
-        cachedAllEvents = events
+        if !unchanged { cachedAllEvents = events }
+        sourceRevisions = cacheable ? revisions : nil
         cachedRateLimits = rateLimits
         cachedLedgerInput = nativeLedger
         scanTime = now
@@ -137,7 +145,27 @@ public final class UsageCollector: @unchecked Sendable {
 
     /// Polls local Ollama (`http://127.0.0.1:11434/api/ps`) asynchronously.
     public func refreshOllamaModels() async -> [LocalRunningModel] {
-        guard let url = URL(string: "http://127.0.0.1:11434/api/ps") else { return [] }
+        await refreshOllamaModelsIfDue(now: Date(), force: true)
+    }
+
+    public func refreshOllamaModelsIfDue(now: Date, force: Bool = false) async -> [LocalRunningModel] {
+        let shouldPoll = lock.withLock {
+            guard !ollamaInFlight, force || now >= nextOllamaPollAt else { return false }
+            ollamaInFlight = true
+            return true
+        }
+        guard shouldPoll else { return lock.withLock { cachedLocalModels } }
+        func finish(_ models: [LocalRunningModel], status: String, success: Bool) -> [LocalRunningModel] {
+            lock.withLock {
+                cachedLocalModels = models
+                modelStatus = status
+                ollamaInFlight = false
+                ollamaFailures = success ? 0 : min(2, ollamaFailures + 1)
+                nextOllamaPollAt = now.addingTimeInterval(success ? 15 : (ollamaFailures == 1 ? 30 : 60))
+            }
+            return models
+        }
+        let url = URL(string: "http://127.0.0.1:11434/api/ps")!
         var request = URLRequest(url: url)
         request.timeoutInterval = 1.2
         do {
@@ -145,8 +173,7 @@ public final class UsageCollector: @unchecked Sendable {
             guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let models = json["models"] as? [[String: Any]] else {
-                lock.withLock { cachedLocalModels = []; modelStatus = "Ollama 返回无效响应" }
-                return []
+                return finish([], status: "Ollama 返回无效响应 · 稍后重试", success: false)
             }
             let parsed: [LocalRunningModel] = models.compactMap { item in
                 guard let name = item["name"] as? String else { return nil }
@@ -155,17 +182,9 @@ public final class UsageCollector: @unchecked Sendable {
                 let expires = LogDateParser.parse(item["expires_at"] as? String)
                 return LocalRunningModel(name: name, sizeBytes: size, vramBytes: vram, expiresAt: expires)
             }
-            lock.withLock {
-                cachedLocalModels = parsed
-                modelStatus = parsed.isEmpty ? "Ollama 已连接，暂无运行模型" : "Ollama：\(parsed.count) 个运行模型"
-            }
-            return parsed
+            return finish(parsed, status: parsed.isEmpty ? "Ollama 已连接，暂无运行模型" : "Ollama：\(parsed.count) 个运行模型", success: true)
         } catch {
-            lock.withLock {
-                cachedLocalModels = []
-                modelStatus = "Ollama 未连接"
-            }
-            return []
+            return finish([], status: "Ollama 未连接 · 自动延后重试", success: false)
         }
     }
 

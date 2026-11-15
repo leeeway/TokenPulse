@@ -7,12 +7,14 @@ public struct AdapterScanResult: Sendable {
     public let events: [TokenUsageEvent]
     public let rateLimit: RateLimitSnapshot?
     public let ledgerInput: CodexLedgerInput?
+    public let contentRevision: UInt64?
 
-    public init(provider: AIProvider, events: [TokenUsageEvent], rateLimit: RateLimitSnapshot? = nil, ledgerInput: CodexLedgerInput? = nil) {
+    public init(provider: AIProvider, events: [TokenUsageEvent], rateLimit: RateLimitSnapshot? = nil, ledgerInput: CodexLedgerInput? = nil, contentRevision: UInt64? = nil) {
         self.provider = provider
         self.events = events
         self.rateLimit = rateLimit
         self.ledgerInput = ledgerInput
+        self.contentRevision = contentRevision
     }
 }
 
@@ -20,11 +22,13 @@ public struct AdapterScanResult: Sendable {
 public protocol ProviderAdapter: Sendable {
     var provider: AIProvider { get }
     var accessWarning: String? { get }
+    var watchDirectory: URL? { get }
     func scan() -> AdapterScanResult
 }
 
 public extension ProviderAdapter {
     var accessWarning: String? { nil }
+    var watchDirectory: URL? { nil }
 }
 
 private enum SourceAccess {
@@ -72,8 +76,8 @@ public final class ClaudeCodeAdapter: ProviderAdapter, @unchecked Sendable {
     public let provider: AIProvider = .claudeCode
     private let baseDirectory: URL
     public var accessWarning: String? { SourceAccess.warning(provider: provider, at: baseDirectory) }
-    private let lock = NSLock()
-    private var fileCache: [String: (mtime: Date, size: UInt64, events: [TokenUsageEvent])] = [:]
+    public var watchDirectory: URL? { baseDirectory }
+    private let cache = IncrementalJSONL<[TokenUsageEvent]>()
 
     public init(baseDirectory: URL? = nil) {
         if let baseDirectory {
@@ -87,13 +91,15 @@ public final class ClaudeCodeAdapter: ProviderAdapter, @unchecked Sendable {
     public func scan() -> AdapterScanResult {
         let fm = FileManager.default
         guard fm.fileExists(atPath: baseDirectory.path) else {
-            return AdapterScanResult(provider: provider, events: [])
+            cache.retainOnly([])
+            return AdapterScanResult(provider: provider, events: [], contentRevision: cache.revision)
         }
 
         var allEvents: [TokenUsageEvent] = []
+        var visited = Set<String>()
         guard let enumerator = fm.enumerator(
             at: baseDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
+            includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
             return AdapterScanResult(provider: provider, events: [])
@@ -101,74 +107,60 @@ public final class ClaudeCodeAdapter: ProviderAdapter, @unchecked Sendable {
 
         for case let fileURL as URL in enumerator {
             guard fileURL.pathExtension == "jsonl" else { continue }
-            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
                   values.isRegularFile == true else { continue }
 
-            let mtime = values.contentModificationDate ?? .distantPast
-            let size = UInt64(values.fileSize ?? 0)
-            let key = fileURL.path
-
-            lock.lock()
-            if let cached = fileCache[key], cached.mtime == mtime && cached.size == size {
-                allEvents.append(contentsOf: cached.events)
-                lock.unlock()
-                continue
+            visited.insert(fileURL.path)
+            let session = fileURL.deletingPathExtension().lastPathComponent
+            let result = cache.read(at: fileURL, initial: []) { events, data, line, date in
+                if let event = Self.parseLine(data, lineIndex: line, sessionId: session, fallbackDate: date) { events.append(event) }
             }
-            lock.unlock()
+            allEvents.append(contentsOf: result.state)
+        }
+        cache.retainOnly(visited)
 
-            let parsed = Self.parseJSONLFile(at: fileURL, fallbackDate: mtime)
-            lock.lock()
-            fileCache[key] = (mtime: mtime, size: size, events: parsed)
-            lock.unlock()
-            allEvents.append(contentsOf: parsed)
+        return AdapterScanResult(provider: provider, events: allEvents, contentRevision: cache.revision)
+    }
+
+    private static func parseLine(_ data: Data, lineIndex: Int, sessionId: String, fallbackDate: Date) -> TokenUsageEvent? {
+        guard data.range(of: Data("\"usage\"".utf8)) != nil,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = json["message"] as? [String: Any],
+              let usage = message["usage"] as? [String: Any] else {
+            return nil
         }
 
-        return AdapterScanResult(provider: provider, events: allEvents)
+        let input = (usage["input_tokens"] as? Int) ?? 0
+        let cacheWrite = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+        let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+        let output = (usage["output_tokens"] as? Int) ?? 0
+
+        guard (input + cacheWrite + cacheRead + output) > 0 else { return nil }
+
+        let model = (message["model"] as? String) ?? "claude-sonnet"
+        let timestamp = LogDateParser.parse(json["timestamp"] as? String) ?? fallbackDate
+        let msgId = (message["id"] as? String) ?? (json["uuid"] as? String) ?? "\(sessionId)-\(lineIndex)"
+
+        return TokenUsageEvent(
+                id: "claude-\(sessionId)-\(msgId)-\(lineIndex)",
+                provider: .claudeCode,
+                model: model,
+                timestamp: timestamp,
+                sessionId: sessionId,
+                inputTokens: input,
+                cacheWriteTokens: cacheWrite,
+                cacheReadTokens: cacheRead,
+                outputTokens: output,
+                hasKnownTimestamp: LogDateParser.parse(json["timestamp"] as? String) != nil
+            )
     }
 
     public static func parseJSONLFile(at url: URL, fallbackDate: Date = Date()) -> [TokenUsageEvent] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let content = try? Data(contentsOf: url) else { return [] }
         let sessionId = url.deletingPathExtension().lastPathComponent
-        var events: [TokenUsageEvent] = []
-        var lineIndex = 0
-
-        content.enumerateLines { line, _ in
-            lineIndex += 1
-            guard line.contains("\"usage\""),
-                  let data = line.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let message = json["message"] as? [String: Any],
-                  let usage = message["usage"] as? [String: Any] else {
-                return
-            }
-
-            let input = (usage["input_tokens"] as? Int) ?? 0
-            let cacheWrite = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-            let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
-            let output = (usage["output_tokens"] as? Int) ?? 0
-
-            guard (input + cacheWrite + cacheRead + output) > 0 else { return }
-
-            let model = (message["model"] as? String) ?? "claude-sonnet"
-            let timestamp = LogDateParser.parse(json["timestamp"] as? String) ?? fallbackDate
-            let msgId = (message["id"] as? String) ?? (json["uuid"] as? String) ?? "\(sessionId)-\(lineIndex)"
-
-            events.append(
-                TokenUsageEvent(
-                    id: "claude-\(sessionId)-\(msgId)-\(lineIndex)",
-                    provider: .claudeCode,
-                    model: model,
-                    timestamp: timestamp,
-                    sessionId: sessionId,
-                    inputTokens: input,
-                    cacheWriteTokens: cacheWrite,
-                    cacheReadTokens: cacheRead,
-                    outputTokens: output,
-                    hasKnownTimestamp: LogDateParser.parse(json["timestamp"] as? String) != nil
-                )
-            )
+        return content.split(separator: 0x0A, omittingEmptySubsequences: false).enumerated().compactMap { index, line in
+            parseLine(Data(line), lineIndex: index + 1, sessionId: sessionId, fallbackDate: fallbackDate)
         }
-        return events
     }
 }
 
@@ -185,8 +177,8 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
     public let provider: AIProvider = .codex
     private let baseDirectory: URL
     public var accessWarning: String? { SourceAccess.warning(provider: provider, at: baseDirectory) }
-    private let lock = NSLock()
-    private var fileCache: [String: (mtime: Date, size: UInt64, parsed: CodexParsedLog)] = [:]
+    public var watchDirectory: URL? { baseDirectory }
+    private let cache = IncrementalJSONL<ParserState>()
 
     public init(baseDirectory: URL? = nil) {
         if let baseDirectory {
@@ -200,10 +192,11 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
     public func scan() -> AdapterScanResult {
         let fm = FileManager.default
         func unavailable(_ message: String) -> AdapterScanResult {
-            AdapterScanResult(provider: provider, events: [], ledgerInput: CodexLedgerInput(warnings: [message]))
+            cache.retainOnly([])
+            return AdapterScanResult(provider: provider, events: [], ledgerInput: CodexLedgerInput(warnings: [message]), contentRevision: cache.revision)
         }
         guard fm.fileExists(atPath: baseDirectory.path), fm.isReadableFile(atPath: baseDirectory.path) else {
-            lock.withLock { fileCache.removeAll() }
+            cache.retainOnly([])
             return unavailable("Codex 原生日志目录不存在或不可读取。")
         }
         var allEvents: [TokenUsageEvent] = []
@@ -213,42 +206,32 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         var warnings: [String] = []
         var visited = Set<String>()
         guard let enumerator = fm.enumerator(at: baseDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
+            includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles], errorHandler: { _, _ in errors = true; return true }) else {
             return unavailable("Codex 原生日志目录无法遍历。")
         }
         for case let fileURL as URL in enumerator {
             guard fileURL.pathExtension == "jsonl" else { continue }
-            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
                   values.isRegularFile == true else { errors = true; continue }
-            let mtime = values.contentModificationDate ?? .distantPast
-            let size = UInt64(values.fileSize ?? 0)
             let key = fileURL.path
             visited.insert(key)
-            let cached = lock.withLock { fileCache[key] }
-            let parsed: CodexParsedLog
-            if let cached, cached.mtime == mtime && cached.size == size {
-                parsed = cached.parsed
-            } else {
-                parsed = Self.parseDetailedRolloutFile(at: fileURL, fallbackDate: mtime)
-                let after = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-                lock.withLock {
-                    if parsed.readSucceeded && after?.contentModificationDate == mtime && UInt64(after?.fileSize ?? 0) == size {
-                        fileCache[key] = (mtime, size, parsed)
-                    } else { fileCache.removeValue(forKey: key) }
-                }
+            let session = fileURL.deletingPathExtension().lastPathComponent
+            let result = cache.read(at: fileURL, initial: ParserState()) { state, data, line, date in
+                state.consume(data, lineIndex: line, sessionId: session, fallbackDate: date)
             }
-            if !parsed.readSucceeded { errors = true }
+            let parsed = result.state.parsed
+            if !result.readSucceeded { errors = true }
             allEvents.append(contentsOf: parsed.events)
             allObservations.append(contentsOf: parsed.observations)
             if let limit = parsed.rateLimit, latestRateLimit == nil || limit.updatedAt > latestRateLimit!.updatedAt { latestRateLimit = limit }
         }
-        lock.withLock { fileCache = fileCache.filter { visited.contains($0.key) } }
+        cache.retainOnly(visited)
         if errors { warnings.append("部分 Codex 原生日志无法读取，本轮账本统计暂停更新，避免将缺失记录当作零用量。") }
         if visited.isEmpty { warnings.append("没有发现 Codex 原生日志文件。") }
         return AdapterScanResult(provider: provider, events: allEvents, rateLimit: latestRateLimit,
             ledgerInput: CodexLedgerInput(events: allEvents, observations: allObservations,
-                                         sourceAvailable: !errors, warnings: warnings))
+                                         sourceAvailable: !errors, warnings: warnings), contentRevision: cache.revision)
     }
 
     public static func parseRolloutFile(
@@ -259,12 +242,9 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         return (parsed.events, parsed.rateLimit)
     }
 
-    public static func parseDetailedRolloutFile(at url: URL, fallbackDate: Date = Date()) -> CodexParsedLog {
-        guard let content = try? Data(contentsOf: url) else {
-            return CodexParsedLog(events: [], rateLimit: nil, observations: [], readSucceeded: false)
-        }
-
-        let sessionId = url.deletingPathExtension().lastPathComponent
+    private struct ParserState: Sendable {
+        static let usageMarker = Data("\"token_count\"".utf8)
+        static let settingsMarker = Data("\"thread_settings_applied\"".utf8)
         var currentModel = "gpt-5-codex"
         var prevTotalInput = 0
         var prevTotalCacheWrite = 0
@@ -273,16 +253,10 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         var prevTotalReasoning = 0
         var events: [TokenUsageEvent] = []
         var latestRateLimit: RateLimitSnapshot?
-        var lineIndex = 0
         var observations: [QuotaObservation] = []
 
-        // Most bytes are conversation text. ASCII markers can be checked directly,
-        // without decoding every line or invoking Unicode-aware string searches.
-        let usageMarker = Data("\"token_count\"".utf8)
-        let settingsMarker = Data("\"thread_settings_applied\"".utf8)
-        content.split(separator: 0x0A, omittingEmptySubsequences: false).forEach { data in
-            lineIndex += 1
-            guard data.range(of: usageMarker) != nil || data.range(of: settingsMarker) != nil,
+        mutating func consume(_ data: Data, lineIndex: Int, sessionId: String, fallbackDate: Date) {
+            guard data.range(of: Self.usageMarker) != nil || data.range(of: Self.settingsMarker) != nil,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let payload = json["payload"] as? [String: Any],
                   let payloadType = payload["type"] as? String else {
@@ -302,7 +276,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
             if let observedAt = genuineTimestamp, let limits = payload["rate_limits"] as? [String: Any] {
                 for role in ["primary", "secondary"] {
                     if let window = limits[role] as? [String: Any],
-                       let observation = strictWeeklyObservation(window, role: role, observedAt: observedAt, plan: limits["plan_type"] as? String) {
+                       let observation = CodexAdapter.strictWeeklyObservation(window, role: role, observedAt: observedAt, plan: limits["plan_type"] as? String) {
                         observations.append(observation)
                     }
                 }
@@ -387,8 +361,21 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
                 )
             )
         }
+        var parsed: CodexParsedLog {
+            CodexParsedLog(events: events, rateLimit: latestRateLimit, observations: observations, readSucceeded: true)
+        }
+    }
 
-        return CodexParsedLog(events: events, rateLimit: latestRateLimit, observations: observations, readSucceeded: true)
+    public static func parseDetailedRolloutFile(at url: URL, fallbackDate: Date = Date()) -> CodexParsedLog {
+        guard let content = try? Data(contentsOf: url) else {
+            return CodexParsedLog(events: [], rateLimit: nil, observations: [], readSucceeded: false)
+        }
+        var state = ParserState()
+        let session = url.deletingPathExtension().lastPathComponent
+        for (index, line) in content.split(separator: 0x0A, omittingEmptySubsequences: false).enumerated() {
+            state.consume(Data(line), lineIndex: index + 1, sessionId: session, fallbackDate: fallbackDate)
+        }
+        return state.parsed
     }
     private static func strictWeeklyObservation(_ window: [String: Any], role: String, observedAt: Date, plan: String?) -> QuotaObservation? {
         func number(_ key: String) -> Double? {
@@ -411,8 +398,8 @@ public final class AntigravityAdapter: ProviderAdapter, @unchecked Sendable {
     public let provider: AIProvider = .antigravity
     private let baseDirectory: URL
     public var accessWarning: String? { SourceAccess.warning(provider: provider, at: baseDirectory) }
-    private let lock = NSLock()
-    private var fileCache: [String: (mtime: Date, size: UInt64, events: [TokenUsageEvent])] = [:]
+    public var watchDirectory: URL? { baseDirectory }
+    private let cache = IncrementalJSONL<[TokenUsageEvent]>()
 
     public init(baseDirectory: URL? = nil) {
         if let baseDirectory {
@@ -426,10 +413,12 @@ public final class AntigravityAdapter: ProviderAdapter, @unchecked Sendable {
     public func scan() -> AdapterScanResult {
         let fm = FileManager.default
         guard fm.fileExists(atPath: baseDirectory.path) else {
-            return AdapterScanResult(provider: provider, events: [])
+            cache.retainOnly([])
+            return AdapterScanResult(provider: provider, events: [], contentRevision: cache.revision)
         }
 
         var allEvents: [TokenUsageEvent] = []
+        var visited = Set<String>()
         guard let brainDirs = try? fm.contentsOfDirectory(
             at: baseDirectory,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -441,75 +430,54 @@ public final class AntigravityAdapter: ProviderAdapter, @unchecked Sendable {
         for dir in brainDirs {
             let transcriptURL = dir
                 .appendingPathComponent(".system_generated/logs/transcript.jsonl")
-            guard fm.fileExists(atPath: transcriptURL.path),
-                  let values = try? transcriptURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]) else {
+            guard fm.fileExists(atPath: transcriptURL.path) else {
                 continue
             }
 
-            let mtime = values.contentModificationDate ?? .distantPast
-            let size = UInt64(values.fileSize ?? 0)
-            let key = transcriptURL.path
-
-            lock.lock()
-            if let cached = fileCache[key], cached.mtime == mtime && cached.size == size {
-                allEvents.append(contentsOf: cached.events)
-                lock.unlock()
-                continue
+            visited.insert(transcriptURL.path)
+            let session = dir.lastPathComponent
+            let result = cache.read(at: transcriptURL, initial: []) { events, data, line, date in
+                if let event = Self.parseLine(data, lineIndex: line, sessionId: session, fallbackDate: date) { events.append(event) }
             }
-            lock.unlock()
-
-            let sessionId = dir.lastPathComponent
-            let parsed = Self.parseTranscriptFile(at: transcriptURL, sessionId: sessionId, fallbackDate: mtime)
-            lock.lock()
-            fileCache[key] = (mtime: mtime, size: size, events: parsed)
-            lock.unlock()
-            allEvents.append(contentsOf: parsed)
+            allEvents.append(contentsOf: result.state)
         }
+        cache.retainOnly(visited)
 
-        return AdapterScanResult(provider: provider, events: allEvents)
+        return AdapterScanResult(provider: provider, events: allEvents, contentRevision: cache.revision)
     }
 
-    public static func parseTranscriptFile(
-        at url: URL,
-        sessionId: String,
-        fallbackDate: Date = Date()
-    ) -> [TokenUsageEvent] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        var events: [TokenUsageEvent] = []
-        var lineIndex = 0
-
-        content.enumerateLines { line, _ in
-            lineIndex += 1
-            guard line.contains("\"input_tokens\"") || line.contains("\"output_tokens\""),
-                  let data = line.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return
-            }
-
-            let input = (json["input_tokens"] as? Int) ?? 0
-            let cacheRead = (json["cache_read_tokens"] as? Int) ?? 0
-            let output = (json["output_tokens"] as? Int) ?? 0
-            guard (input + cacheRead + output) > 0 else { return }
-
-            let stepIndex = (json["step_index"] as? Int) ?? lineIndex
-            let timestamp = LogDateParser.parse(json["created_at"] as? String) ?? fallbackDate
-
-            events.append(
-                TokenUsageEvent(
-                    id: "agy-\(sessionId)-\(stepIndex)",
-                    provider: .antigravity,
-                    model: "gemini-antigravity",
-                    timestamp: timestamp,
-                    sessionId: sessionId,
-                    inputTokens: input,
-                    cacheWriteTokens: 0,
-                    cacheReadTokens: cacheRead,
-                    outputTokens: output,
-                    hasKnownTimestamp: LogDateParser.parse(json["created_at"] as? String) != nil
-                )
-            )
+    private static func parseLine(_ data: Data, lineIndex: Int, sessionId: String, fallbackDate: Date) -> TokenUsageEvent? {
+        guard data.range(of: Data("\"input_tokens\"".utf8)) != nil || data.range(of: Data("\"output_tokens\"".utf8)) != nil,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
         }
 
-        return events
+        let input = (json["input_tokens"] as? Int) ?? 0
+        let cacheRead = (json["cache_read_tokens"] as? Int) ?? 0
+        let output = (json["output_tokens"] as? Int) ?? 0
+        guard (input + cacheRead + output) > 0 else { return nil }
+
+        let stepIndex = (json["step_index"] as? Int) ?? lineIndex
+        let timestamp = LogDateParser.parse(json["created_at"] as? String) ?? fallbackDate
+
+        return TokenUsageEvent(
+                id: "agy-\(sessionId)-\(stepIndex)",
+                provider: .antigravity,
+                model: "gemini-antigravity",
+                timestamp: timestamp,
+                sessionId: sessionId,
+                inputTokens: input,
+                cacheWriteTokens: 0,
+                cacheReadTokens: cacheRead,
+                outputTokens: output,
+                hasKnownTimestamp: LogDateParser.parse(json["created_at"] as? String) != nil
+            )
+    }
+
+    public static func parseTranscriptFile(at url: URL, sessionId: String, fallbackDate: Date = Date()) -> [TokenUsageEvent] {
+        guard let content = try? Data(contentsOf: url) else { return [] }
+        return content.split(separator: 0x0A, omittingEmptySubsequences: false).enumerated().compactMap { index, line in
+            parseLine(Data(line), lineIndex: index + 1, sessionId: sessionId, fallbackDate: fallbackDate)
+        }
     }
 }
