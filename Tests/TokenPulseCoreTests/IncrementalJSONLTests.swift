@@ -27,6 +27,7 @@ struct IncrementalJSONLTests {
             }.state
         }
         #expect(read() == [1])
+        #expect(cache.maximumReadSize < 1_000_000)
         let initialBytes = cache.bytesRead, revision = cache.revision
         #expect(read() == [1] && cache.bytesRead == initialBytes && cache.revision == revision)
         let extra = Data("\n{\"n\":2}\n{\"n\":".utf8)

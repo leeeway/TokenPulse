@@ -37,6 +37,7 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var generation: UInt64 = 0
+    private(set) var maximumReadSize = 0
     private(set) var bytesRead: UInt64 = 0 // Internal diagnostics; never contains log content.
     var revision: UInt64 { lock.withLock { generation } }
 
@@ -63,6 +64,7 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                     try handle.seek(toOffset: offset)
                     let data = try handle.read(upToCount: count) ?? Data()
                     bytesRead += UInt64(data.count)
+                    maximumReadSize = max(maximumReadSize, data.count)
                     return data
                 }
                 var previous = entries[key]
@@ -78,30 +80,43 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                     }
                 }
                 let offset = previous?.stamp.size ?? 0
-                guard stamp.size - offset <= UInt64(Int.max) else { throw CocoaError(.fileReadTooLarge) }
-                let appended = try read(offset, Int(stamp.size - offset))
-                guard appended.count == Int(stamp.size - offset), try Stamp(url) == stamp else {
-                    throw CocoaError(.fileReadUnknown)
-                }
                 var state = previous?.committed ?? initial
                 var lines = previous?.lines ?? 0
                 var pending = previous?.tail ?? Data()
-                pending.append(appended)
-                let completeEnd = pending.lastIndex(of: 0x0A).map { pending.index(after: $0) } ?? pending.startIndex
-                if completeEnd > pending.startIndex {
-                    // omit the trailing empty slice; empty *physical* lines still count.
-                    let complete = pending[..<completeEnd]
-                    for line in complete.split(separator: 0x0A, omittingEmptySubsequences: false).dropLast() {
-                        lines += 1
-                        consume(&state, Data(line), lines, stamp.modified)
+                var position = offset
+                // Bound temporary allocations during the initial scan too. Reading a
+                // whole large file through FileHandle leaves a large reusable malloc
+                // buffer in a long-lived menu bar process even after it is freed.
+                while position < stamp.size {
+                    let count = Int(min(256 * 1024, stamp.size - position))
+                    try autoreleasepool {
+                        let chunk = try read(position, count)
+                        guard chunk.count == count else { throw CocoaError(.fileReadUnknown) }
+                        pending.append(chunk)
+                        if let newline = chunk.lastIndex(of: 0x0A) {
+                            let trailingBytes = chunk.distance(from: chunk.index(after: newline), to: chunk.endIndex)
+                            let completeEnd = pending.index(pending.endIndex, offsetBy: -trailingBytes)
+                            let complete = pending[..<completeEnd]
+                            for line in complete.split(separator: 0x0A, omittingEmptySubsequences: false).dropLast() {
+                                lines += 1
+                                consume(&state, Data(line), lines, stamp.modified)
+                            }
+                            // subdata makes an independent tail rather than a slice
+                            // retaining the allocation for the already-consumed chunk.
+                            pending = pending.subdata(in: completeEnd..<pending.endIndex)
+                        }
                     }
+                    position += UInt64(count)
                 }
-                let tail = Data(pending[completeEnd...])
+                guard try Stamp(url) == stamp else { throw CocoaError(.fileReadUnknown) }
+                let tail = pending
                 var preview = state
-                if !tail.isEmpty { consume(&preview, tail, lines + 1, stamp.modified) }
+                autoreleasepool {
+                    if !tail.isEmpty { consume(&preview, tail, lines + 1, stamp.modified) }
+                }
                 let prefix: Data
                 if let previous, previous.prefix.count == 128 { prefix = previous.prefix }
-                else { prefix = try read(0, min(128, Int(stamp.size))) }
+                else { prefix = try read(0, Int(min(128, stamp.size))) }
                 let suffix = try read(stamp.size - min(128, stamp.size), Int(min(128, stamp.size)))
                 guard try Stamp(url) == stamp else { throw CocoaError(.fileReadUnknown) }
                 entries[key] = Entry(stamp: stamp, committed: state, preview: preview, tail: tail,
