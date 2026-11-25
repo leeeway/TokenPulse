@@ -302,7 +302,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
                     }
                 }
 
-                let candidate = RateLimitSnapshot(
+                var candidate = RateLimitSnapshot(
                     provider: .codex,
                     planType: rl["plan_type"] as? String,
                     primaryUsedPercent: primaryPct,
@@ -313,6 +313,9 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
                     secondaryResetsAt: secReset,
                     updatedAt: timestamp
                 )
+                let secondary = rl["secondary"] as? [String: Any]
+                candidate.primaryUsageReported = CodexAdapter.finiteNumber(primary["used_percent"]) != nil
+                candidate.secondaryUsageReported = CodexAdapter.finiteNumber(secondary?["used_percent"]) != nil
                 if latestRateLimit == nil || candidate.updatedAt >= latestRateLimit!.updatedAt {
                     latestRateLimit = candidate
                 }
@@ -377,14 +380,16 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         }
         return state.parsed
     }
+    private static func finiteNumber(_ raw: Any?) -> Double? {
+        guard let value = raw as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
+        let result = value.doubleValue
+        return result.isFinite ? result : nil
+    }
+
     private static func strictWeeklyObservation(_ window: [String: Any], role: String, observedAt: Date, plan: String?) -> QuotaObservation? {
-        func number(_ key: String) -> Double? {
-            guard let value = window[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
-            let result = value.doubleValue
-            return result.isFinite ? result : nil
-        }
-        guard number("window_minutes") == 10080, let used = number("used_percent"), (0...100).contains(used),
-              let epoch = number("resets_at"), epoch > 0, epoch <= 253402300799 else { return nil }
+        guard finiteNumber(window["window_minutes"]) == 10080,
+              let used = finiteNumber(window["used_percent"]), (0...100).contains(used),
+              let epoch = finiteNumber(window["resets_at"]), epoch > 0, epoch <= 253402300799 else { return nil }
         let result = QuotaObservation(observedAt: observedAt, windowRole: role, windowMinutes: 10080,
                                      resetsAt: Date(timeIntervalSince1970: epoch), usedPercent: used, planType: plan)
         return result.isValidWeeklyObservation ? result : nil

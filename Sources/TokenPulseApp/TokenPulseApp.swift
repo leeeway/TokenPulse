@@ -408,9 +408,9 @@ struct ProviderRowView: View {
 
             if let rl = summary.rateLimit {
                 HStack(alignment: .top, spacing: 10) {
-                    quotaColumn(used: rl.primaryUsedPercent, minutes: rl.primaryWindowMinutes, resetsAt: rl.primaryResetsAt)
-                    if let sec = rl.secondaryUsedPercent {
-                        quotaColumn(used: sec, minutes: rl.secondaryWindowMinutes, resetsAt: rl.secondaryResetsAt)
+                    quotaColumn(used: rl.reportedPrimaryUsedPercent, minutes: rl.primaryWindowMinutes, resetsAt: rl.primaryResetsAt)
+                    if rl.secondaryUsedPercent != nil {
+                        quotaColumn(used: rl.reportedSecondaryUsedPercent, minutes: rl.secondaryWindowMinutes, resetsAt: rl.secondaryResetsAt)
                     }
                 }
                 .foregroundStyle(.secondary)
@@ -422,24 +422,38 @@ struct ProviderRowView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    private func quotaColumn(used: Double, minutes: Int?, resetsAt: Date?) -> some View {
-        let expired = resetsAt.map { $0 <= now } ?? false
+    private func quotaColumn(used: Double?, minutes: Int?, resetsAt: Date?) -> some View {
+        let indicator = QuotaIndicator(usedPercent: used, expired: resetsAt.map { $0 <= now } ?? false)
+        let title = TokenFormatters.quotaWindow(minutes) + " 配额"
+        let status = indicator.percentText.map { "剩余 \($0) · \(indicator.status)" } ?? indicator.status
+        let reset = TokenFormatters.quotaResetCountdown(resetsAt, now: now)
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
-                Text(TokenFormatters.quotaWindow(minutes) + " 配额")
+                Text(title)
                 Spacer(minLength: 4)
-                Text((expired ? "上次 " : "") + TokenFormatters.percent(used / 100))
+                indicator.dot
+                Text(status)
+                    .foregroundStyle(.primary)
+                    .monospacedDigit()
             }
-            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-            ProgressView(value: min(100, max(0, used)), total: 100)
-                .controlSize(.mini)
-                .tint(expired ? .gray : .accentColor)
-                .opacity(expired ? 0.4 : 1)
-            Text(TokenFormatters.quotaResetCountdown(resetsAt, now: now))
+            .font(.system(size: 9.5, weight: .medium))
+            GeometryReader { geometry in
+                Capsule().fill(Color.primary.opacity(0.10))
+                    .overlay(alignment: .leading) {
+                        if let remaining = indicator.remainingPercent, remaining > 0 {
+                            Capsule().fill(indicator.color)
+                                .frame(width: geometry.size.width * remaining / 100)
+                        }
+                    }
+            }
+            .frame(height: 3)
+            .accessibilityHidden(true)
+            Text(reset)
                 .font(.system(size: 9))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
         .help(resetsAt.map { "本地重置时间：\($0.formatted(date: .complete, time: .standard))" } ?? "日志未提供重置时间")
     }
 }

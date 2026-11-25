@@ -183,6 +183,16 @@ public struct RateLimitSnapshot: Codable, Sendable, Equatable {
     public let secondaryWindowMinutes: Int?
     public let secondaryResetsAt: Date?
     public let updatedAt: Date
+    // The native parser can distinguish an observed zero from the legacy JSON/CLI fallback.
+    var primaryUsageReported = true
+    var secondaryUsageReported = true
+    public var reportedPrimaryUsedPercent: Double? { primaryUsageReported ? primaryUsedPercent : nil }
+    public var reportedSecondaryUsedPercent: Double? { secondaryUsageReported ? secondaryUsedPercent : nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, planType, primaryUsedPercent, primaryWindowMinutes, primaryResetsAt
+        case secondaryUsedPercent, secondaryWindowMinutes, secondaryResetsAt, updatedAt
+    }
 
     public init(
         provider: AIProvider,

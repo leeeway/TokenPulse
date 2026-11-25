@@ -10,7 +10,7 @@ while IFS= read -r source; do
   objects+=(".build/debug/TokenPulseCore.build/$(basename "$source").o")
 done < .build/debug/TokenPulseCore.build/sources
 swiftc -parse-as-library -target "$(uname -m)-apple-macos14.0" -I .build/debug/Modules \
-  Sources/TokenPulseApp/LedgerView.swift Sources/TokenPulseApp/LedgerViewModel.swift \
+  Sources/TokenPulseApp/LedgerView.swift Sources/TokenPulseApp/LedgerViewModel.swift Sources/TokenPulseApp/QuotaIndicator.swift \
   scripts/render-mac-ledger.swift "${objects[@]}" \
   -o "$compiler_output/render-ledger"
 "$compiler_output/render-ledger" "$output"

@@ -91,6 +91,23 @@ struct MacRegressionTests {
     }
 
     @Test
+    func missingQuotaUseIsDistinctFromObservedZeroWithoutChangingJSON() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jsonl")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let log = """
+        {"timestamp":"2026-10-21T08:00:00Z","payload":{"type":"token_count","rate_limits":{"primary":{},"secondary":{"used_percent":0}}}}
+        """
+        try log.write(to: file, atomically: true, encoding: .utf8)
+        let quota = try #require(CodexAdapter.parseRolloutFile(at: file).rateLimit)
+        #expect(quota.reportedPrimaryUsedPercent == nil)
+        #expect(quota.reportedSecondaryUsedPercent == 0)
+        let data = try JSONEncoder().encode(quota)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["primaryUsedPercent"] as? Double == 0)
+        #expect(json["primaryUsageReported"] == nil)
+    }
+
+    @Test
     func quotaUsesNewestTimestampWithinFile() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jsonl")
         defer { try? FileManager.default.removeItem(at: file) }

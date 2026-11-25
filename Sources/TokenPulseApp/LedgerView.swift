@@ -133,8 +133,15 @@ struct LedgerReportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 16) {
-                metric(report.isEnded ? "末次观测周配额" : "日志记录周配额",
-                       report.quotaUsedPercent.map { String(format: "%.1f%%", $0) } ?? "未知", .blue)
+                if report.isEnded && report.kind == .weekly {
+                    metric("末次观测周配额 · 已用",
+                           report.quotaUsedPercent.map { String(format: "%.1f%%", $0) } ?? "未知", .secondary)
+                } else if report.kind == .weekly {
+                    let indicator = QuotaIndicator(usedPercent: report.quotaUsedPercent, expired: false)
+                    metric("本轮周配额 · 剩余", indicator.percentText ?? "—", .primary, quota: indicator)
+                } else {
+                    metric("周配额", "—", .secondary)
+                }
                 metric("本机 Token 合计", TokenFormatters.compactTokens(report.totals.totalTokens), .primary)
                 metric("本机等值 USD", TokenFormatters.usd(report.totals.estimatedUSD), .orange)
             }
@@ -186,12 +193,18 @@ struct LedgerReportView: View {
             ForEach(report.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
         }
     }
-    private func metric(_ title: String, _ value: String, _ color: Color) -> some View {
+    private func metric(_ title: String, _ value: String, _ color: Color, quota: QuotaIndicator? = nil) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 26, weight: .semibold, design: .rounded)).foregroundStyle(color)
-                .monospacedDigit().lineLimit(1)
-        }.frame(maxWidth: .infinity, alignment: .leading).card()
+            HStack(spacing: 8) {
+                Text(value).font(.system(size: 26, weight: .semibold, design: .rounded)).foregroundStyle(color)
+                    .monospacedDigit().lineLimit(1)
+                if let quota {
+                    quota.dot
+                    Text(quota.status).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).card().accessibilityElement(children: .combine)
     }
     private func counter(_ title: String, _ count: Int) -> some View {
         HStack { Text(title); Spacer(); Text(count.formatted()).monospacedDigit() }.font(.callout)
