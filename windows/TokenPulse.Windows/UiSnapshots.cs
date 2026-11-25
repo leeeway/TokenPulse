@@ -215,7 +215,9 @@ internal static class UiSnapshots
             await ShowAndCapture(settings, directory, "settings-source-disabled");
             Descendants<RadioButton>(settings).Single(r => Equals(r.Content, "运行偏好")).IsChecked = true;
             await ShowAndCapture(settings, directory, "settings-preferences");
-            if (Descendants<CheckBox>(settings).Count() != 6) throw new InvalidOperationException("Expected four source and two preference switches.");
+            var quotaNotifications = Descendants<CheckBox>(settings).Single(c => Equals(c.ToolTip, "低额度系统通知"));
+            if (quotaNotifications.IsChecked != false) throw new InvalidOperationException("Quota notifications should default to off.");
+            quotaNotifications.IsChecked = true;
             var tokenLimit = Descendants<TextBox>(settings).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "Token 阈值（整数）");
             var costLimit = Descendants<TextBox>(settings).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "等效费用阈值（USD）");
             var save = Descendants<Button>(settings).Single(b => Equals(b.Content, "保存设置"));
@@ -227,8 +229,9 @@ internal static class UiSnapshots
             if (sourcePath.Text != originalPath || sourceToggle.IsChecked != false || tokenLimit.Text != "500000")
                 throw new InvalidOperationException("Settings tab switch lost unsaved edits.");
             save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-            if (saved is not { EnableClaude: false, BurnRateTokens: 500000, BurnRateUSD: 0 } || saved.ClaudeDirectory != originalPath)
-                throw new InvalidOperationException("Source/threshold changes did not reach the save callback.");
+            if (saved is not { EnableClaude: false, BurnRateTokens: 500000, BurnRateUSD: 0, EnableQuotaNotifications: true }
+                || saved.ClaudeDirectory != originalPath)
+                throw new InvalidOperationException("Source and notification preferences did not reach the save callback.");
             Descendants<RadioButton>(settings).Single(r => Equals(r.Content, "运行偏好")).IsChecked = true;
             Descendants<Button>(settings).Single(b => Equals(b.Content, "恢复默认阈值"))
                 .RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
