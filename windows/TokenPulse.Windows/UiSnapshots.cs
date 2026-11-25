@@ -174,9 +174,11 @@ internal static class UiSnapshots
             var compactScan = new ScanResult(compactEvents, [quota with { Primary = new(29, 300, null) }], sources);
             window.SetSourcesExpanded(false);
             RenderDashboard(Aggregation.Build(compactScan, TimeWindow.Today, now), compactScan, models);
-            if (Descendants<Border>(window).Count(b => b.Name == "ProviderCard") != 3
-                || !Descendants<TextBlock>(window).Any(t => t.Text == "日志未提供重置时间"))
-                throw new InvalidOperationException("Compact product limit or unknown reset time failed.");
+            if (Descendants<Border>(window).Count(b => b.Name == "ProviderCard") != 3)
+                throw new InvalidOperationException("Compact product limit failed.");
+            VerifyQuotaStatus(window, "余量未知", Ui.Muted);
+            if (Descendants<Border>(window).Any(b => b.Name == "QuotaRemainingFill"))
+                throw new InvalidOperationException("A missing reset time was shown as a confirmed balance.");
             var compactDetails = Descendants<StackPanel>(window).First(p => p.Name == "ModelDetails");
             if (compactDetails.Children.Count != 3
                 || Descendants<TextBlock>(compactDetails).Any(t => t.Text == "compact-model-3" || t.Text == "compact-model-4")
