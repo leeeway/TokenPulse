@@ -46,6 +46,57 @@ internal static class QuotaLedgerTests
                 Log(start.ToString("O"), "\"primary\":{" + weekly.Replace("\"used_percent\":75", "\"used_percent\":101") + "}") })
                 Check(Parse(content).QuotaObservations.Count == 0, content);
         });
+        Test("secondary-only rollover replaces the waiting dashboard and ledger together", () =>
+        {
+            using var directory = new LedgerDirectory();
+            var before = end.AddSeconds(-60);
+            var after = end.AddSeconds(1);
+            var next = end.AddDays(7);
+            string Window(string role, DateTimeOffset reset, int used, int minutes = 10080) =>
+                "\"" + role + "\":" + System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    window_minutes = minutes, resets_at = reset.ToUnixTimeSeconds(), used_percent = used
+                });
+            var result = Parse(string.Join("\n",
+                Log(before.AddSeconds(-60).ToString("O"), Window("secondary", end.AddHours(1), 2)),
+                Log(before.ToString("O"), Window("primary", end, 95)),
+                Log(before.ToString("O"), Window("secondary", end.AddHours(2), 40, 300)),
+                Log(after.ToString("O"), Window("secondary", next, 5))));
+            var scan = Scan([], result.QuotaObservations);
+            var session = new QuotaLedgerSession(new QuotaLedgerStore(Path.Combine(directory.Root, "rollover.json")));
+            session.Update(scan, true, before);
+            var initial = scan.LatestQuotas(before);
+            Check(initial.Select(o => o.WindowMinutes).SequenceEqual([300, 10080]));
+            Check(initial.Last().UsedPercent == 95 && session.View().Current?.Quota?.UsedPercent == 95);
+            Check(scan.LatestQuotas(end).Last().IsExpired(end));
+            Check(session.View(end) is { Current: null, AwaitingResetUpdate: true });
+            session.Update(scan, true, end);
+            Check(session.View() is { Current: null, AwaitingResetUpdate: true });
+            session.Update(scan, true, after);
+            Check(scan.LatestQuotas(after).Last() is { WindowRole: "secondary", UsedPercent: 5 });
+            Check(session.View(after) is { AwaitingResetUpdate: false, Current.Quota.UsedPercent: 5 });
+        });
+
+        Test("low quota alerts deduplicate across restarts and distinguish window cycles", () =>
+        {
+            var low = new QuotaObservation(now, "primary", 300, now.AddHours(1), 80, null);
+            var high = low with { UsedPercent = 79.9 };
+            var weekly = low with { WindowMinutes = 10080, WindowRole = "secondary" };
+            var alerts = new QuotaAlerts();
+            Check(alerts.Claim([high, low with { RecordedAtUtc = now.AddSeconds(1) }], now).Count == 0);
+            Check(alerts.Claim([low, weekly], now).Count == 2);
+            Check(alerts.Claim([low with { UsedPercent = 100 }], now.AddSeconds(1)).Count == 0);
+            var restored = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(
+                System.Text.Json.JsonSerializer.Serialize(alerts.NotifiedCycles));
+            alerts = new QuotaAlerts(restored);
+            Check(alerts.Claim([low, weekly], now.AddSeconds(1)).Count == 0);
+            var reset = low.ResetsAtUtc;
+            Check(alerts.Claim([low, weekly], reset).Count == 0);
+            var newCycle = low with { RecordedAtUtc = reset, ResetsAtUtc = reset.AddHours(5), UsedPercent = 100 };
+            Check(alerts.Claim([newCycle], reset).Single().UsedPercent == 100);
+            Check(alerts.Claim([newCycle], reset).Count == 0);
+        });
+
         Test("shared fixture uses UTC half-open bounds and keeps events after 100 percent", () =>
         {
             var events = Events().Concat(new[] {

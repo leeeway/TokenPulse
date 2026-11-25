@@ -104,8 +104,9 @@ public final class CodexLedgerStore: @unchecked Sendable {
         if !input.sourceAvailable { warnings.append("Codex 原生日志不可用，本轮统计未更新；历史本地归档继续保留。") }
         let current: UsageReportSnapshot?
         if let preparedReports {
-            current = preparedReports.filter { $0.startAt <= now && $0.endAt > now }
-                .max { ($0.quotaRecordedAt ?? .distantPast, $0.endAt) < ($1.quotaRecordedAt ?? .distantPast, $1.endAt) }
+            current = CodexLedgerEngine.currentObservation(input: input, now: now).flatMap { observation in
+                preparedReports.first { $0.endAt == observation.resetsAt }
+            }
         } else {
             current = CodexLedgerEngine.currentReport(input: input, now: now, timeZone: timeZone)
         }

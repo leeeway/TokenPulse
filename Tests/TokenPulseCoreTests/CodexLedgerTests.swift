@@ -168,6 +168,37 @@ struct CodexLedgerTests {
         #expect(oldAPI.rateLimit != nil)
     }
 
+    @Test func secondaryOnlyRolloverKeepsDashboardAndLedgerOnTheSameObservation() throws {
+        let temp = try LedgerTestDirectory(); defer { temp.remove() }
+        let file = temp.url.appendingPathComponent("rollover.jsonl")
+        let formatter = ISO8601DateFormatter()
+        let before = cycleEnd.addingTimeInterval(-60)
+        let after = cycleEnd.addingTimeInterval(1)
+        let nextReset = cycleEnd.addingTimeInterval(604800)
+        let overlappingReset = cycleEnd.addingTimeInterval(3600)
+        let shortReset = cycleEnd.addingTimeInterval(7200)
+        let overlapping = try quotaLine(timestamp: formatter.string(from: before.addingTimeInterval(-60)),
+            role: "secondary", used: 2, epoch: overlappingReset.timeIntervalSince1970)
+        let old = try quotaLine(timestamp: formatter.string(from: before), role: "primary", used: 95)
+        let short = try quotaLine(timestamp: formatter.string(from: before),
+            role: "secondary", used: 40, minutes: 300, epoch: shortReset.timeIntervalSince1970)
+        let fresh = try quotaLine(timestamp: formatter.string(from: after),
+            role: "secondary", used: 5, epoch: nextReset.timeIntervalSince1970)
+        try (overlapping + old + short + fresh).write(to: file, atomically: true, encoding: .utf8)
+        let parsed = CodexAdapter.parseDetailedRolloutFile(at: file)
+        let input = CodexLedgerInput(observations: parsed.observations, sourceAvailable: true)
+        let store = CodexLedgerStore(directory: temp.url.appendingPathComponent("ledger"))
+        let initial = input.latestQuotas(at: before)
+        #expect(initial.map(\.windowMinutes) == [300, 10080])
+        #expect(initial.last?.usedPercent == 95)
+        #expect(store.update(input: input, now: before).current?.quotaUsedPercent == 95)
+        #expect(input.latestQuotas(at: cycleEnd).last?.isExpired(at: cycleEnd) == true)
+        #expect(store.update(input: input, now: cycleEnd).current == nil)
+        #expect(input.latestQuotas(at: after).last?.windowRole == "secondary")
+        #expect(input.latestQuotas(at: after).last?.usedPercent == 5)
+        #expect(store.update(input: input, now: after).current?.quotaUsedPercent == 5)
+    }
+
     @Test func currentCycleDoesNotInventResetAndConflictsRemainVisible() throws {
         let ended = CodexLedgerInput(observations: [quota()], sourceAvailable: true)
         #expect(CodexLedgerEngine.currentReport(input: ended, now: cycleEnd.addingTimeInterval(1)) == nil)

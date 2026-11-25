@@ -16,14 +16,16 @@ struct TokenPulseMainApp: App {
                 .frame(width: 430)
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: viewModel.snapshot.isHighBurnRate ? "flame.fill" : "bolt.fill")
+                Image(systemName: viewModel.lowestQuota?.isLow == true ? "exclamationmark.circle.fill"
+                      : viewModel.snapshot.isHighBurnRate ? "flame.fill" : "bolt.fill")
                 if !viewModel.menuBarText.isEmpty {
                     Text(viewModel.menuBarText)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                 }
             }
-            .help("TokenPulse · \(viewModel.selectedWindow.title) · \(TokenFormatters.compactTokens(viewModel.snapshot.grandTotalTokens)) Token · \(TokenFormatters.usd(viewModel.snapshot.totalCostUSD))")
-            .accessibilityLabel("TokenPulse AI 用量")
+            .help(["TokenPulse · \(viewModel.selectedWindow.title) · \(TokenFormatters.compactTokens(viewModel.snapshot.grandTotalTokens)) Token · \(TokenFormatters.usd(viewModel.snapshot.totalCostUSD))",
+                   viewModel.quotaHelp].compactMap { $0 }.joined(separator: "\n"))
+            .accessibilityLabel(viewModel.quotaHelp.map { "TokenPulse AI 用量 · \($0)" } ?? "TokenPulse AI 用量")
         }
         .menuBarExtraStyle(.window)
 
@@ -51,6 +53,9 @@ struct DashboardPopoverView: View {
                     .foregroundStyle(.orange)
             }
             upstreamDownstreamBar
+            if !viewModel.codexQuotas.isEmpty || s.providers.contains(where: { $0.provider == .codex && $0.rateLimit != nil }) {
+                CodexQuotaView(observations: viewModel.codexQuotas, now: max(viewModel.quotaNow, s.generatedAt))
+            }
             providerBreakdownSection
             sevenDayChartSection
             footerSection
@@ -268,7 +273,7 @@ struct DashboardPopoverView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 ForEach(s.recentProviders) { p in
-                    ProviderRowView(summary: p, grandTotal: max(1, s.grandTotalTokens), now: s.generatedAt)
+                    ProviderRowView(summary: p)
                 }
             }
         }
@@ -322,6 +327,9 @@ struct DashboardPopoverView: View {
                         }
                     }
                 }
+                Divider()
+                Toggle("低额度系统通知", isOn: Binding(get: { viewModel.quotaNotificationsEnabled },
+                                                 set: { viewModel.setQuotaNotifications($0) }))
             } label: {
                 Label("状态栏样式", systemImage: "menubar.rectangle")
                     .font(.system(size: 10.5))
@@ -359,9 +367,6 @@ struct DashboardPopoverView: View {
 
 struct ProviderRowView: View {
     let summary: ProviderSummary
-    let grandTotal: Int
-    let now: Date
-
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 7) {
@@ -406,27 +411,41 @@ struct ProviderRowView: View {
             .font(.system(size: 9.5, design: .monospaced))
             .foregroundStyle(.secondary)
 
-            if let rl = summary.rateLimit {
-                HStack(alignment: .top, spacing: 10) {
-                    quotaColumn(used: rl.reportedPrimaryUsedPercent, minutes: rl.primaryWindowMinutes, resetsAt: rl.primaryResetsAt)
-                    if rl.secondaryUsedPercent != nil {
-                        quotaColumn(used: rl.reportedSecondaryUsedPercent, minutes: rl.secondaryWindowMinutes, resetsAt: rl.secondaryResetsAt)
-                    }
-                }
-                .foregroundStyle(.secondary)
-                .help("配额记录于 \(rl.updatedAt.formatted(date: .numeric, time: .standard))；以日志为准")
-            }
         }
         .padding(8)
         .background(Color.primary.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
+}
 
-    private func quotaColumn(used: Double?, minutes: Int?, resetsAt: Date?) -> some View {
-        let indicator = QuotaIndicator(usedPercent: used, expired: resetsAt.map { $0 <= now } ?? false)
-        let title = TokenFormatters.quotaWindow(minutes) + " 配额"
+private struct CodexQuotaView: View {
+    let observations: [QuotaObservation]
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Codex 配额").font(.system(size: 10.5, weight: .semibold))
+            if observations.isEmpty {
+                Text("余量未知").font(.system(size: 9.5))
+            } else {
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(observations, id: \.windowMinutes) { observation in
+                        quotaColumn(observation)
+                    }
+                }
+            }
+        }
+        .foregroundStyle(.secondary)
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func quotaColumn(_ observation: QuotaObservation) -> some View {
+        let indicator = QuotaIndicator(usedPercent: observation.usedPercent, expired: observation.isExpired(at: now))
+        let title = TokenFormatters.quotaWindow(observation.windowMinutes) + " 配额"
         let status = indicator.percentText.map { "剩余 \($0) · \(indicator.status)" } ?? indicator.status
-        let reset = TokenFormatters.quotaResetCountdown(resetsAt, now: now)
+        let reset = TokenFormatters.quotaResetCountdown(observation.resetsAt, now: now)
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
                 Text(title)
@@ -454,6 +473,6 @@ struct ProviderRowView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .help(resetsAt.map { "本地重置时间：\($0.formatted(date: .complete, time: .standard))" } ?? "日志未提供重置时间")
+        .help("配额记录于 \(observation.observedAt.formatted(date: .numeric, time: .standard))")
     }
 }

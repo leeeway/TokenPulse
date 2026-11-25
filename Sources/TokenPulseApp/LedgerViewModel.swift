@@ -40,6 +40,11 @@ private actor LedgerCoordinator {
 @MainActor
 final class LedgerViewModel: ObservableObject {
     @Published private(set) var state = LedgerViewState()
+    @Published private(set) var quotaNow: Date
+    var currentReport: UsageReportSnapshot? {
+        guard let current = state.current, current.endAt > quotaNow else { return nil }
+        return current
+    }
     @Published private(set) var customReport: UsageReportSnapshot?
     @Published private(set) var isLoading = true
     @Published private(set) var isWorking = false
@@ -53,12 +58,18 @@ final class LedgerViewModel: ObservableObject {
     init(directory: URL? = nil, clock: @escaping @Sendable () -> Date = { Date() }) {
         coordinator = LedgerCoordinator(directory: directory)
         self.clock = clock
+        quotaNow = clock()
     }
 
-    func receive(_ input: CodexLedgerInput) {
+    func advanceQuotaClock(to now: Date) {
+        if quotaNow != now { quotaNow = now }
+    }
+
+    func receive(_ input: CodexLedgerInput, at observedAt: Date? = nil) {
         revision += 1
         let expected = revision
-        let now = clock()
+        let now = observedAt ?? clock()
+        advanceQuotaClock(to: now)
         Task {
             let updated = await coordinator.update(input, sequence: expected, now: now)
             guard expected == revision, let updated else { return }

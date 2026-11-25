@@ -276,7 +276,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
             if let observedAt = genuineTimestamp, let limits = payload["rate_limits"] as? [String: Any] {
                 for role in ["primary", "secondary"] {
                     if let window = limits[role] as? [String: Any],
-                       let observation = CodexAdapter.strictWeeklyObservation(window, role: role, observedAt: observedAt, plan: limits["plan_type"] as? String) {
+                       let observation = CodexAdapter.strictQuotaObservation(window, role: role, observedAt: observedAt, plan: limits["plan_type"] as? String) {
                         observations.append(observation)
                     }
                 }
@@ -386,13 +386,14 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         return result.isFinite ? result : nil
     }
 
-    private static func strictWeeklyObservation(_ window: [String: Any], role: String, observedAt: Date, plan: String?) -> QuotaObservation? {
-        guard finiteNumber(window["window_minutes"]) == 10080,
+    private static func strictQuotaObservation(_ window: [String: Any], role: String, observedAt: Date, plan: String?) -> QuotaObservation? {
+        guard let minutes = finiteNumber(window["window_minutes"]), (1...525600).contains(minutes),
+              minutes.rounded(.towardZero) == minutes,
               let used = finiteNumber(window["used_percent"]), (0...100).contains(used),
               let epoch = finiteNumber(window["resets_at"]), epoch > 0, epoch <= 253402300799 else { return nil }
-        let result = QuotaObservation(observedAt: observedAt, windowRole: role, windowMinutes: 10080,
+        let result = QuotaObservation(observedAt: observedAt, windowRole: role, windowMinutes: Int(minutes),
                                      resetsAt: Date(timeIntervalSince1970: epoch), usedPercent: used, planType: plan)
-        return result.isValidWeeklyObservation ? result : nil
+        return result.isValid ? result : nil
     }
 
 }

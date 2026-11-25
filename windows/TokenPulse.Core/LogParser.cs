@@ -70,7 +70,8 @@ public static class LogParser
                             if (Real(node, "used_percent") is not { } percent || percent is < 0 or > 100
                                 || KnownMinutes(node) is not { } minutes
                                 || Epoch(node) is not { } reset) continue;
-                            observations.Add(new(recorded.ToUniversalTime(), role, minutes, reset.ToUniversalTime(), percent, Text(limits, "plan_type")));
+                            var observation = new QuotaObservation(recorded.ToUniversalTime(), role, minutes, reset.ToUniversalTime(), percent, Text(limits, "plan_type"));
+                            if (observation.IsValid) observations.Add(observation);
                         }
                     }
                     var primary = Field(limits, "primary");

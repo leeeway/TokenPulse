@@ -22,6 +22,10 @@ internal sealed class MainWindow : Window
     private readonly Border alertBox, errorBox, localModelCard;
     private readonly TextBlock providerCount = Ui.Text("", 10.5, Ui.Muted);
     private readonly StackPanel providerRows = new();
+    private readonly StackPanel quotaRows = new();
+    private readonly Border quotaCard;
+    private IReadOnlyList<QuotaObservation> shownQuotas = [];
+    private DateTimeOffset quotaRenderedAt;
     private readonly System.Windows.Controls.Primitives.UniformGrid trend = new() { Rows = 1, Columns = 7 };
     private readonly TextBlock trendTotal = Ui.Text("", 10.5, Ui.Muted);
     private readonly StackPanel sourceRows = new();
@@ -40,7 +44,6 @@ internal sealed class MainWindow : Window
     private bool exporting;
     private bool dataPending;
     private IReadOnlyList<ProviderSummary>? renderedProviders;
-    private DateTimeOffset providersRenderedAt;
     private bool sourcesExpanded;
     private bool renderedAllDisabled;
     private bool renderedHasUnknownUsage;
@@ -120,6 +123,10 @@ internal sealed class MainWindow : Window
         Ui.Put(flow, new Border { Background = Ui.Blue }, 0); Ui.Put(flow, new Border { Background = Ui.Brush("#89BDBD") }, 1); Ui.Put(flow, new Border { Background = Ui.Accent }, 2);
         flowBody.Children.Add(new Border { Child = flow, Height = 5, ClipToBounds = true, CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 8, 0, 0) });
         flowBody.ToolTip = flowDetail; body.Children.Add(Ui.Card(flowBody, new Thickness(11))); Ui.Gap(body, 14);
+        quotaCard = Ui.Card(quotaRows, new Thickness(12));
+        quotaCard.Margin = new Thickness(0, 0, 0, 10);
+        quotaCard.Visibility = Visibility.Collapsed;
+        body.Children.Add(quotaCard);
         var products = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto);
         Ui.Put(products, Ui.Text("产品用量", 12, Ui.Ink, FontWeights.SemiBold), 0);
         Ui.Put(products, providerCount, 1);
@@ -184,7 +191,7 @@ internal sealed class MainWindow : Window
         providerCount.ToolTip = "按当前周期最近活跃时间排序，最多展示 3 个来源；汇总和 CSV 包含全部来源与模型。";
         var allDisabled = scan.Statuses.Count > 0 && scan.Statuses.All(s => s.State == SourceState.Disabled);
         // Keep interactive rows (and keyboard focus) intact on unchanged timer ticks.
-        if (!SameProviders(snapshot.Providers, snapshot.GeneratedAt) || allDisabled != renderedAllDisabled || hasUnknownUsage != renderedHasUnknownUsage)
+        if (!SameProviders(snapshot.Providers) || allDisabled != renderedAllDisabled || hasUnknownUsage != renderedHasUnknownUsage)
         {
             providerRows.Children.Clear();
             if (snapshot.Providers.Count == 0)
@@ -200,8 +207,8 @@ internal sealed class MainWindow : Window
                 }
                 providerRows.Children.Add(Ui.Card(empty));
             }
-            foreach (var provider in snapshot.Providers.Take(3)) providerRows.Children.Add(ProviderCard(provider, snapshot.GeneratedAt));
-            renderedProviders = snapshot.Providers; providersRenderedAt = snapshot.GeneratedAt; renderedAllDisabled = allDisabled; renderedHasUnknownUsage = hasUnknownUsage;
+            foreach (var provider in snapshot.Providers.Take(3)) providerRows.Children.Add(ProviderCard(provider));
+            renderedProviders = snapshot.Providers; renderedAllDisabled = allDisabled; renderedHasUnknownUsage = hasUnknownUsage;
         }
         RenderTrend(snapshot.Trend); localModelRows.Children.Clear(); localModelCard.Visibility = ollama.Models.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         foreach (var model in ollama.Models) localModelRows.Children.Add(Ui.Text($"{model.Name}  ·  显存 {model.VramBytes / 1073741824.0:F1} GiB", 11, Ui.Muted));
@@ -221,19 +228,17 @@ internal sealed class MainWindow : Window
         connection.Text = (errors > 0 ? "部分数据源需检查" : allDisabled ? "日志源已关闭" : "本地只读") + $" · {Ui.Version}";
         connectionIndicator.Fill = errors > 0 ? Ui.Amber : allDisabled ? Ui.Muted : Ui.Green;
     }
-    private bool SameProviders(IReadOnlyList<ProviderSummary> providers, DateTimeOffset now)
+    private bool SameProviders(IReadOnlyList<ProviderSummary> providers)
     {
         if (renderedProviders is null || renderedProviders.Count != providers.Count) return false;
         return renderedProviders.Zip(providers).All(pair =>
         {
             var (old, current) = pair;
-            return old.Provider == current.Provider && old.Totals == current.Totals && old.RateLimit == current.RateLimit && old.LastActivityAt == current.LastActivityAt
-                && old.TopModels.SequenceEqual(current.TopModels) && old.Models.SequenceEqual(current.Models)
-                && (current.RateLimit?.Primary.IsExpired(now) ?? false) == (old.RateLimit?.Primary.IsExpired(providersRenderedAt) ?? false)
-                && (current.RateLimit?.Secondary?.IsExpired(now) ?? false) == (old.RateLimit?.Secondary?.IsExpired(providersRenderedAt) ?? false);
+            return old.Provider == current.Provider && old.Totals == current.Totals && old.LastActivityAt == current.LastActivityAt
+                && old.TopModels.SequenceEqual(current.TopModels) && old.Models.SequenceEqual(current.Models);
         });
     }
-    private Border ProviderCard(ProviderSummary provider, DateTimeOffset now)
+    private Border ProviderCard(ProviderSummary provider)
     {
         var panel = new StackPanel(); var header = Ui.Columns(GridLength.Auto, new(1, GridUnitType.Star), GridLength.Auto);
         var (shortName, foreground, background) = provider.Provider switch
@@ -249,11 +254,6 @@ internal sealed class MainWindow : Window
         var price = Ui.Text(Formatting.Usd(provider.Totals.Cost), 10, Ui.Muted); price.ToolTip = string.Join("\n\n", provider.TopModels.Select(m => Pricing.Basis(provider.Provider, m))); price.HorizontalAlignment = HorizontalAlignment.Right; price.Margin = new Thickness(0, 2, 0, 0); values.Children.Add(price); Ui.Put(header, values, 2); panel.Children.Add(header);
         header.ToolTip = provider.LastActivityAt is { } active ? $"最近活跃 {active.LocalDateTime:yyyy-MM-dd HH:mm:ss}" : "日志没有提供可确认的用量时间";
         Ui.Gap(panel, 8); panel.Children.Add(Ui.Text($"↑ {Formatting.Tokens(provider.Totals.Upstream)}     ↓ {Formatting.Tokens(provider.Totals.Output)}     缓存 {provider.Totals.CacheHitRatio:P1}", 10.5, Ui.Muted));
-        if (provider.RateLimit is { } quota)
-        {
-            AddQuota(panel, quota.Primary, now); if (quota.Secondary is { } secondary) AddQuota(panel, secondary, now);
-            panel.ToolTip = $"配额记录于 {quota.UpdatedAt.LocalDateTime:g}" + (quota.PlanType is { } plan ? $" · {plan}" : "") + "；以日志为准";
-        }
         if (provider.Models.Count > 0)
         {
             var details = new StackPanel { Name = "ModelDetails", Margin = new Thickness(0, 6, 0, 0),
@@ -291,13 +291,34 @@ internal sealed class MainWindow : Window
         }
         var card = Ui.Card(panel, new Thickness(12)); card.Name = "ProviderCard"; card.Margin = new Thickness(0, 0, 0, 8); return card;
     }
-    private static void AddQuota(Panel panel, QuotaWindow quota, DateTimeOffset now)
+    internal void UpdateQuota(IReadOnlyList<QuotaObservation> observations, DateTimeOffset now, bool hasUnverified = false)
+    {
+        var visibility = observations.Count > 0 || hasUnverified ? Visibility.Visible : Visibility.Collapsed;
+        if (quotaCard.Visibility == visibility && shownQuotas.SequenceEqual(observations)
+            && !observations.Any(o => o.IsExpired(now) != o.IsExpired(quotaRenderedAt))) return;
+
+        quotaCard.Visibility = visibility;
+        shownQuotas = observations;
+        quotaRenderedAt = now;
+        quotaRows.Children.Clear();
+        if (visibility != Visibility.Visible) return;
+        quotaRows.Children.Add(Ui.Text("Codex 配额", 11, Ui.Ink, FontWeights.SemiBold));
+        if (observations.Count == 0)
+        {
+            Ui.Gap(quotaRows, 5);
+            var unknown = QuotaIndicator.FromUsage(null);
+            quotaRows.Children.Add(unknown.StatusLabel(unknown.Status));
+        }
+        foreach (var observation in observations) AddQuota(quotaRows, observation, now);
+    }
+
+    private static void AddQuota(Panel panel, QuotaObservation quota, DateTimeOffset now)
     {
         Ui.Gap(panel, 8);
-        var duration = quota.WindowMinutes is { } minutes ? minutes % 1440 == 0 ? $"{minutes / 1440} 天" : minutes % 60 == 0 ? $"{minutes / 60} 小时" : $"{minutes} 分钟" : "窗口";
+        var duration = QuotaIndicator.WindowLabel(quota.WindowMinutes);
         var label = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto); Ui.Put(label, Ui.Text(duration + "配额", 10, Ui.Muted), 0);
         var expired = quota.IsExpired(now);
-        var indicator = QuotaIndicator.FromUsage(quota.UsageReported ? quota.UsedPercent : null, expired);
+        var indicator = QuotaIndicator.FromUsage(quota.UsedPercent, expired);
         var status = indicator.PercentText is { } percent ? $"剩余 {percent} · {indicator.Status}" : indicator.Status;
         Ui.Put(label, indicator.StatusLabel(status), 1);
         panel.Children.Add(label);
@@ -308,13 +329,13 @@ internal sealed class MainWindow : Window
             Ui.Put(bar, new Border { Name = "QuotaRemainingFill", Background = indicator.Color, CornerRadius = new CornerRadius(2) }, 0);
             track.Child = bar;
         }
-        track.ToolTip = (quota.ResetsAt is { } reset ? $"重置于 {reset.LocalDateTime:g}" : "日志未提供重置时间") +
-            (expired && quota.UsageReported ? $"；上次记录已用 {quota.UsedPercent:F1}%，等待新的日志确认" : "");
+        track.ToolTip = $"配额记录于 {quota.RecordedAtUtc.LocalDateTime:g} · 重置于 {quota.ResetsAtUtc.LocalDateTime:g}";
         panel.Children.Add(track);
-        var resetText = Ui.Text(quota.ResetsAt is { } resetAt
-            ? (expired ? "上次重置 " : "重置 ") + resetAt.LocalDateTime.ToString(resetAt.LocalDateTime.Year == now.LocalDateTime.Year ? "MM/dd HH:mm" : "yyyy/MM/dd HH:mm")
-            : "日志未提供重置时间", 9.5, Ui.Muted);
-        resetText.Margin = new Thickness(0, 4, 0, 0); resetText.ToolTip = track.ToolTip;
+        var resetAt = quota.ResetsAtUtc.LocalDateTime;
+        var resetText = Ui.Text((expired ? "上次重置 " : "重置 ")
+            + resetAt.ToString(resetAt.Year == now.LocalDateTime.Year ? "MM/dd HH:mm" : "yyyy/MM/dd HH:mm"), 9.5, Ui.Muted);
+        resetText.Margin = new Thickness(0, 4, 0, 0);
+        resetText.ToolTip = track.ToolTip;
         panel.Children.Add(resetText);
     }
     private async Task ExportAsync()

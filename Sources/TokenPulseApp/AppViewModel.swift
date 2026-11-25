@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import TokenPulseCore
+import UserNotifications
 
 public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
     case iconOnly = "icon_only"
@@ -43,9 +44,16 @@ extension UsageCollector: DashboardCollecting {
     func ledgerInputForApp() -> CodexLedgerInput? { ledgerInputFromCache() }
 }
 
+private final class QuotaNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
+    }
+}
+
 @MainActor
 public final class AppViewModel: ObservableObject {
-    let ledger = LedgerViewModel()
+    let ledger: LedgerViewModel
     private var ledgerWindow: LedgerWindowController?
     @Published public var selectedWindow: TimeWindow {
         didSet {
@@ -63,6 +71,15 @@ public final class AppViewModel: ObservableObject {
     @Published public private(set) var lastScanAt: Date?
     @Published public private(set) var sourceWarnings: [String] = []
     @Published public private(set) var ollamaStatus = "尚未查询 Ollama"
+
+    @Published private(set) var codexQuotas: [QuotaObservation] = []
+    @Published private(set) var quotaNow: Date
+    @Published private(set) var quotaNotificationsEnabled: Bool
+    @Published private(set) var quotaNotificationStatus: String?
+    private var quotaAlerts: QuotaAlerts
+    private var notificationPreferenceRevision = 0
+    private let quotaNotificationDelegate = QuotaNotificationDelegate()
+    private let notificationSink: (@MainActor ([QuotaObservation], Date) -> Void)?
 
     private let collector: any DashboardCollecting
     private let defaults: UserDefaults
@@ -83,10 +100,18 @@ public final class AppViewModel: ObservableObject {
     }
 
     init(collector: any DashboardCollecting, defaults: UserDefaults, startsAutomatically: Bool = true,
-         clock: @escaping @Sendable () -> Date = { Date() }, eventMinimumInterval: TimeInterval = 4) {
+         clock: @escaping @Sendable () -> Date = { Date() }, eventMinimumInterval: TimeInterval = 4,
+         ledgerDirectory: URL? = nil, notificationSink: (@MainActor ([QuotaObservation], Date) -> Void)? = nil) {
         self.collector = collector
         self.defaults = defaults
         self.clock = clock
+        ledger = LedgerViewModel(directory: ledgerDirectory, clock: clock)
+        self.notificationSink = notificationSink
+        quotaNow = clock()
+        quotaNotificationsEnabled = defaults.bool(forKey: "quotaNotificationsEnabled")
+        quotaAlerts = defaults.data(forKey: "quotaAlertCycles").flatMap {
+            try? JSONDecoder().decode(QuotaAlerts.self, from: $0)
+        } ?? QuotaAlerts()
         self.eventMinimumInterval = eventMinimumInterval
         let window = defaults.string(forKey: "selectedWindow").flatMap(TimeWindow.init(rawValue:)) ?? .today
         selectedWindow = window
@@ -98,6 +123,7 @@ public final class AppViewModel: ObservableObject {
                     switch trigger {
                     case .logs: self?.logsDidChange()
                     case .fallback, .wake: self?.refreshAutomatically()
+                    case let .quotaReset(deadline): self?.quotaDeadlineReached(at: deadline)
                     }
                 }
             }, render: { [weak self] in
@@ -117,6 +143,7 @@ public final class AppViewModel: ObservableObject {
     public var statusHelp: String {
         var lines = ["只读本地日志 · 费用为估算值", ollamaStatus]
         if let lastScanAt { lines.append("日志更新于 " + lastScanAt.formatted(date: .numeric, time: .standard)) }
+        if let quotaNotificationStatus { lines.append(quotaNotificationStatus) }
         lines.append(contentsOf: sourceWarnings)
         if snapshot.unknownTimestampEventCount > 0 {
             lines.append("\(snapshot.unknownTimestampEventCount) 条记录时间未知，仅计入全部用量，不参与趋势和高消耗提醒。")
@@ -157,6 +184,76 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
+    var lowestQuota: QuotaObservation? {
+        codexQuotas.filter { !$0.isExpired(at: quotaNow) }.min { $0.remainingPercent < $1.remainingPercent }
+    }
+
+    var quotaHelp: String? {
+        if let lowestQuota { return QuotaIndicator.summary(of: lowestQuota, at: quotaNow) }
+        return codexQuotas.isEmpty ? nil : "Codex 配额待更新"
+    }
+
+    func setQuotaNotifications(_ enabled: Bool) {
+        notificationPreferenceRevision += 1
+        let revision = notificationPreferenceRevision
+        quotaNotificationStatus = nil
+        if !enabled {
+            quotaNotificationsEnabled = false
+            defaults.set(false, forKey: "quotaNotificationsEnabled")
+            return
+        }
+        Task { [weak self] in
+            let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) == true
+            guard let self, revision == notificationPreferenceRevision else { return }
+            quotaNotificationsEnabled = allowed
+            defaults.set(allowed, forKey: "quotaNotificationsEnabled")
+            quotaNotificationStatus = allowed ? nil : "如需配额通知，请在系统设置中允许 TokenPulse 通知。"
+            if allowed { refreshAutomatically() }
+        }
+    }
+
+    private func advanceQuotaClock(to now: Date) {
+        if quotaNow != now { quotaNow = now }
+        ledger.advanceQuotaClock(to: now)
+        driver?.scheduleReset(at: codexQuotas.map(\.resetsAt).filter { $0 > now }.min())
+    }
+
+    func quotaDeadlineReached(at deadline: Date) {
+        let now = clock()
+        advanceQuotaClock(to: now)
+        if deadline <= now && lastRefreshStartedAt < deadline { refreshAutomatically() }
+    }
+
+    private func receiveQuotas(_ input: CodexLedgerInput, now: Date) {
+        let readings = input.latestQuotas(at: now)
+        if codexQuotas != readings { codexQuotas = readings }
+        advanceQuotaClock(to: now)
+        ledger.receive(input, at: now)
+        guard quotaNotificationsEnabled else { return }
+        let alerts = quotaAlerts.claim(codexQuotas, at: now)
+        guard !alerts.isEmpty else { return }
+        defaults.set(try? JSONEncoder().encode(quotaAlerts), forKey: "quotaAlertCycles")
+        if let notificationSink {
+            notificationSink(alerts, now)
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "Codex 配额提醒"
+        content.body = alerts.map { QuotaIndicator.summary(of: $0, at: now) }.joined(separator: " · ")
+        content.sound = .default
+        let center = UNUserNotificationCenter.current()
+        center.delegate = quotaNotificationDelegate
+        Task { [weak self] in
+            guard self?.quotaNotificationsEnabled == true else { return }
+            do {
+                try await center.add(UNNotificationRequest(
+                    identifier: UUID().uuidString, content: content, trigger: nil))
+            } catch {
+                self?.quotaNotificationStatus = "配额通知未送出，请检查系统通知设置。"
+            }
+        }
+    }
+
     /// User actions bypass Ollama backoff; background events respect it.
     public func refreshNow() { refresh(forceOllama: true) }
     func refreshAutomatically() { refresh(forceOllama: false) }
@@ -182,6 +279,8 @@ public final class AppViewModel: ObservableObject {
     }
 
     private func refresh(forceOllama: Bool) {
+        let now = clock()
+        advanceQuotaClock(to: now)
         guard !isRefreshing else {
             pendingRefresh = true
             pendingForce = pendingForce || forceOllama
@@ -192,7 +291,6 @@ public final class AppViewModel: ObservableObject {
         eventTask = nil
         isRefreshing = true
         let collector = collector
-        let now = clock()
         lastRefreshStartedAt = now
         refreshTask = Task { [weak self] in
             async let models = collector.refreshOllamaModelsIfDue(now: now, force: forceOllama)
@@ -201,7 +299,7 @@ public final class AppViewModel: ObservableObject {
                 return collector.ledgerInputForApp()
             }.value
             self?.renderFromCache()
-            if let ledgerInput { self?.ledger.receive(ledgerInput) }
+            if let self, let ledgerInput { receiveQuotas(ledgerInput, now: clock()) }
             let refreshedModels = await models
             guard let self else { return }
             if refreshedModels != snapshot.runningLocalModels || collector.ollamaStatus != ollamaStatus {
@@ -221,6 +319,7 @@ public final class AppViewModel: ObservableObject {
         if ledgerWindow == nil {
             ledgerWindow = LedgerWindowController(model: ledger, refresh: { [weak self] in self?.refreshNow() })
         }
+        refreshAutomatically()
         ledgerWindow?.showLedger()
     }
 

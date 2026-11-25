@@ -10,6 +10,12 @@ internal sealed class TrayIcon : IDisposable
     private readonly Forms.ContextMenuStrip menu = new();
     private readonly Icon normal = CreateIcon(false);
     private readonly Icon warning = CreateIcon(true);
+    private DashboardSnapshot? lastToday;
+    private string? quotaSummary;
+    private bool quotaLow;
+    private bool? warningShown;
+    private string? displayedText;
+
     public TrayIcon(Action show, Action refresh, Action settings, Action exit, Action? ledger = null)
     {
         menu.Items.Add("打开面板", null, (_, _) => show());
@@ -24,9 +30,43 @@ internal sealed class TrayIcon : IDisposable
     }
     public void Update(DashboardSnapshot today)
     {
-        notify.Icon = today.IsHighBurnRate ? warning : normal;
-        var text = $"TokenPulse {Ui.Version} · 今日 {Formatting.Tokens(today.Totals.Total)} · {Formatting.Usd(today.Totals.Cost)}";
-        notify.Text = text.Length <= 63 ? text : text[..63];
+        lastToday = today;
+        UpdateBadge();
+    }
+
+    public void UpdateQuota(IReadOnlyList<QuotaObservation> observations, DateTimeOffset now)
+    {
+        var lowest = observations.Where(o => !o.IsExpired(now)).MinBy(o => o.RemainingPercent);
+        quotaLow = lowest?.IsLow == true;
+        quotaSummary = lowest is not null ? "Codex " + QuotaIndicator.Summary(lowest, now)
+            : observations.Count > 0 ? "Codex 配额待更新" : null;
+        UpdateBadge();
+    }
+
+    public void NotifyQuota(IReadOnlyList<QuotaObservation> observations, DateTimeOffset now)
+    {
+        var message = string.Join("\n", observations.Select(o => QuotaIndicator.Summary(o, now)));
+        notify.ShowBalloonTip(5000, "Codex 配额提醒", message, Forms.ToolTipIcon.Warning);
+    }
+
+    private void UpdateBadge()
+    {
+        var warns = quotaLow || lastToday?.IsHighBurnRate == true;
+        if (warningShown != warns)
+        {
+            notify.Icon = warns ? warning : normal;
+            warningShown = warns;
+        }
+        var todayText = lastToday is { } today
+            ? $"今日 {Formatting.Tokens(today.Totals.Total)} · {Formatting.Usd(today.Totals.Cost)}"
+            : "正在读取本地日志";
+        var text = quotaSummary is { } quota ? $"{quota} · {todayText}" : $"TokenPulse {Ui.Version} · {todayText}";
+        var clipped = text.Length <= 63 ? text : text[..63];
+        if (displayedText != clipped)
+        {
+            notify.Text = clipped;
+            displayedText = clipped;
+        }
     }
     internal static Icon CreateIcon(bool alert)
     {

@@ -29,6 +29,16 @@ internal readonly record struct QuotaIndicator(double? RemainingPercent, string 
         null => null
     };
 
+    public static string WindowLabel(int minutes) => minutes % 1440 == 0 ? $"{minutes / 1440} 天"
+        : minutes % 60 == 0 ? $"{minutes / 60} 小时" : $"{minutes} 分钟";
+
+    public static string Summary(QuotaObservation quota, DateTimeOffset now)
+    {
+        var indicator = FromUsage(quota.UsedPercent, quota.IsExpired(now));
+        var remaining = indicator.PercentText is { } percent ? $"剩余 {percent} · {indicator.Status}" : indicator.Status;
+        return $"{WindowLabel(quota.WindowMinutes)} {remaining} · 重置 {quota.ResetsAtUtc.LocalDateTime:MM/dd HH:mm}";
+    }
+
     public StackPanel StatusLabel(string text)
     {
         var label = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };

@@ -1,4 +1,5 @@
 using System.Security.Principal;
+using System.Text.Json;
 using System.Windows.Threading;
 
 namespace TokenPulse.Windows;
@@ -10,6 +11,14 @@ internal sealed class App : Application
     private readonly OllamaClient ollama = new();
     private readonly CancellationTokenSource stopping = new();
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private readonly DispatcherTimer resetTimer = new();
+    private DateTimeOffset? scheduledReset;
+    private IReadOnlyList<QuotaObservation> quotas = [];
+    private bool hasUnverifiedQuota;
+    private bool quotaRefreshPending;
+    private DateTimeOffset lastRefreshStartedAt;
+    private QuotaAlerts quotaAlerts = new();
+    private string QuotaAlertsPath => Path.Combine(Path.GetDirectoryName(store.FilePath)!, "quota-alerts.json");
     private Settings settings = new();
     private MainWindow? dashboard;
     private TrayIcon? tray;
@@ -52,10 +61,14 @@ internal sealed class App : Application
         (settings, settingsWarning) = store.Load();
         try { settings = settings with { StartWithWindows = StartupRegistration.Read() is not null }; }
         catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException) { settingsWarning = "无法读取开机启动状态：" + ex.Message; }
-        if (!smoke) ledger = new QuotaLedgerSession();
+        if (!smoke)
+        {
+            ledger = new QuotaLedgerSession();
+            quotaAlerts = LoadQuotaAlerts();
+        }
         dashboard = new MainWindow(() => _ = RefreshAsync(), OpenSettings, () => _ = RenderAsync(), OpenLedger);
         MainWindow = dashboard;
-        tray = new TrayIcon(dashboard.OpenNearTray, () => _ = RefreshAsync(), OpenSettings, () => Shutdown(), OpenLedger);
+        tray = new TrayIcon(OpenDashboard, () => _ = RefreshAsync(), OpenSettings, () => Shutdown(), OpenLedger);
         dashboard.ShowError(settingsWarning);
         if (smoke)
         {
@@ -70,14 +83,33 @@ internal sealed class App : Application
             smokeTimer.Start();
             return;
         }
+        resetTimer.Tick += async (_, _) =>
+        {
+            resetTimer.Stop();
+            var deadline = scheduledReset;
+            scheduledReset = null;
+            var now = DateTimeOffset.UtcNow;
+            ScheduleQuotaReset(now);
+            if (deadline is { } due && now >= due && lastRefreshStartedAt < due)
+                await RefreshAsync(queueIfBusy: true);
+        };
         timer.Tick += async (_, _) => await RefreshAsync();
         timer.Start();
         if (!e.Args.Contains("--background")) dashboard.OpenNearTray();
         _ = RefreshAsync();
     }
-    private async Task RefreshAsync()
+    private async Task RefreshAsync(bool queueIfBusy = false)
     {
-        if (refreshing || stopping.IsCancellationRequested) return;
+        if (stopping.IsCancellationRequested) return;
+        var now = DateTimeOffset.UtcNow;
+        UpdateQuotaTime(now);
+        ledgerWindow?.AdvanceQuotaClock(now);
+        if (refreshing)
+        {
+            quotaRefreshPending |= queueIfBusy;
+            return;
+        }
+        lastRefreshStartedAt = now;
         refreshing = true;
         dashboard?.SetRefreshing(true);
         var currentSettings = settings;
@@ -91,12 +123,19 @@ internal sealed class App : Application
                 async result =>
                 {
                     if (currentSettings != settings || stopping.IsCancellationRequested) return;
+                    var observedAt = DateTimeOffset.UtcNow;
                     if (ledger is { } session)
-                        await Task.Run(() => session.Update(result, currentSettings.EnableCodex, DateTimeOffset.UtcNow,
+                        await Task.Run(() => session.Update(result, currentSettings.EnableCodex, observedAt,
                             expectedGeneration: ledgerGeneration), stopping.Token);
                     if (currentSettings != settings || stopping.IsCancellationRequested) return;
                     scan = result; scanSettings = currentSettings;
+                    quotas = currentSettings.EnableCodex ? result.LatestQuotas(observedAt) : [];
+                    hasUnverifiedQuota = currentSettings.EnableCodex && result.RateLimits.Any(rate => rate.Provider == Providers.Codex);
+                    var shownAt = DateTimeOffset.UtcNow;
+                    UpdateQuotaTime(shownAt);
+                    ScheduleQuotaReset(shownAt);
                     ledgerWindow?.Refresh();
+                    if (currentSettings.EnableQuotaNotifications) NotifyQuota(shownAt);
                     localModels = new([], currentSettings.EnableOllama ? "正在查询 Ollama…" : "Ollama 查询已关闭");
                     dashboard?.ShowError(settingsWarning);
                     await RenderAsync();
@@ -114,9 +153,66 @@ internal sealed class App : Application
         {
             refreshing = false;
             dashboard?.SetRefreshing(false);
-            if (currentSettings != settings && !stopping.IsCancellationRequested) _ = RefreshAsync();
+            var refreshAgain = quotaRefreshPending || currentSettings != settings;
+            quotaRefreshPending = false;
+            if (refreshAgain && !stopping.IsCancellationRequested) _ = RefreshAsync();
         }
     }
+    private void UpdateQuotaTime(DateTimeOffset now)
+    {
+        dashboard?.UpdateQuota(quotas, now, hasUnverifiedQuota);
+        tray?.UpdateQuota(quotas, now);
+    }
+
+    private void ScheduleQuotaReset(DateTimeOffset now)
+    {
+        var next = quotas.Where(o => !o.IsExpired(now)).Select(o => (DateTimeOffset?)o.ResetsAtUtc).Min();
+        if (next == scheduledReset) return;
+        resetTimer.Stop();
+        scheduledReset = next;
+        if (next is not { } deadline) return;
+        // DispatcherTimer takes milliseconds bounded by Int32.
+        resetTimer.Interval = TimeSpan.FromMilliseconds(Math.Clamp((deadline - now).TotalMilliseconds, 1, int.MaxValue));
+        resetTimer.Start();
+    }
+
+    private QuotaAlerts LoadQuotaAlerts()
+    {
+        try
+        {
+            return new(JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(File.ReadAllText(QuotaAlertsPath)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return new();
+        }
+    }
+
+    private void NotifyQuota(DateTimeOffset now)
+    {
+        if (tray is null) return;
+        var alerts = quotaAlerts.Claim(quotas, now);
+        if (alerts.Count == 0) return;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(QuotaAlertsPath)!);
+            var temporary = QuotaAlertsPath + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(quotaAlerts.NotifiedCycles));
+            File.Move(temporary, QuotaAlertsPath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // In-memory claims still suppress duplicates in the running app.
+        }
+        tray.NotifyQuota(alerts, now);
+    }
+
+    private void OpenDashboard()
+    {
+        UpdateQuotaTime(DateTimeOffset.UtcNow);
+        dashboard?.OpenNearTray();
+    }
+
     private async Task RenderAsync()
     {
         if (scan is null || dashboard is null || scanSettings != settings) return;
@@ -156,13 +252,14 @@ internal sealed class App : Application
         if (ledger is null) return;
         if (ledgerWindow is null)
         {
-            ledgerWindow = new QuotaLedgerWindow(ledger);
+            ledgerWindow = new QuotaLedgerWindow(ledger, () => _ = RefreshAsync(queueIfBusy: true), () => DateTimeOffset.UtcNow);
             ledgerWindow.Closed += (_, _) => ledgerWindow = null;
         }
         ledgerWindow.Refresh();
         ledgerWindow.Show();
         if (ledgerWindow.WindowState == WindowState.Minimized) ledgerWindow.WindowState = WindowState.Normal;
         ledgerWindow.Activate();
+        _ = RefreshAsync(queueIfBusy: true);
     }
     private void OpenSettings()
     {
@@ -192,6 +289,13 @@ internal sealed class App : Application
             store.Save(candidate);
             rendering?.Cancel();
             renderRevision++;
+            if (candidate.EnableCodex != settings.EnableCodex || candidate.CodexDirectory != settings.CodexDirectory)
+            {
+                quotas = [];
+                hasUnverifiedQuota = false;
+                UpdateQuotaTime(DateTimeOffset.UtcNow);
+                ScheduleQuotaReset(DateTimeOffset.UtcNow);
+            }
             settings = candidate; settingsWarning = null;
             ledger?.Suspend(candidate.EnableCodex);
             ledgerWindow?.Refresh();
@@ -210,7 +314,7 @@ internal sealed class App : Application
     }
     protected override void OnExit(ExitEventArgs e)
     {
-        timer.Stop(); stopping.Cancel();
+        timer.Stop(); resetTimer.Stop(); stopping.Cancel();
         if (dashboard is not null) { dashboard.AllowClose = true; dashboard.Close(); }
         ledgerWindow?.Close();
         tray?.Dispose(); ollama.Dispose();

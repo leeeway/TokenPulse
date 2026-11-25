@@ -11,6 +11,7 @@ public sealed record Settings
     public string CustomEventsFile { get; init; } = Path.Combine(Home, ".tokenpulse", "custom_events.jsonl");
     public bool StartWithWindows { get; init; }
     public bool EnableOllama { get; init; } = true;
+    public bool EnableQuotaNotifications { get; init; }
     public bool EnableClaude { get; init; } = true;
     public bool EnableCodex { get; init; } = true;
     public bool EnableAntigravity { get; init; } = true;

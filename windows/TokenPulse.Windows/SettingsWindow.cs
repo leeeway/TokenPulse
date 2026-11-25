@@ -114,6 +114,8 @@ internal sealed class SettingsWindow : Window
         }
         var startup = Toggle("登录时启动", "在系统托盘中安静运行", settings.StartWithWindows); Ui.Gap(preferences, 16);
         var ollama = Toggle("Ollama 本地模型", "显示本机运行模型与显存占用", settings.EnableOllama);
+        Ui.Gap(preferences, 16);
+        var quotaNotifications = Toggle("低额度系统通知", "剩余 20% 或更低时，每个配额窗口每个周期提醒一次。", settings.EnableQuotaNotifications);
         behavior.Children.Add(Ui.Card(preferences, new Thickness(14)));
         saveButton.Click += (_, _) =>
         {
@@ -131,7 +133,7 @@ internal sealed class SettingsWindow : Window
                 var candidate = settings with { ClaudeDirectory = Expand(claude.Path), CodexDirectory = Expand(codex.Path), AntigravityDirectory = Expand(antigravity.Path),
                     CustomEventsFile = Expand(custom.Path), EnableClaude = claude.Enabled.IsChecked == true, EnableCodex = codex.Enabled.IsChecked == true,
                     EnableAntigravity = antigravity.Enabled.IsChecked == true, EnableCustom = custom.Enabled.IsChecked == true,
-                    BurnRateTokens = tokenValue, BurnRateUSD = costValue, StartWithWindows = startup.IsChecked == true, EnableOllama = ollama.IsChecked == true };
+                    BurnRateTokens = tokenValue, BurnRateUSD = costValue, StartWithWindows = startup.IsChecked == true, EnableOllama = ollama.IsChecked == true, EnableQuotaNotifications = quotaNotifications.IsChecked == true };
                 try { candidate.Validate(); }
                 catch (ArgumentException) { ((RadioButton)tabs.Children[0]).IsChecked = true; throw; }
                 var message = save(candidate);

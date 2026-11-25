@@ -24,6 +24,21 @@ private actor ModelGate {
     func release() { released = true; continuation?.resume(); continuation = nil }
 }
 
+private final class QuotaTestClock: @unchecked Sendable {
+    private var value: Date
+    private let lock = NSLock()
+    init(_ value: Date) { self.value = value }
+    var now: Date { lock.withLock { value } }
+    func set(_ newValue: Date) { lock.withLock { value = newValue } }
+}
+
+private final class ResetRecorder: @unchecked Sendable {
+    private var values: [Date] = []
+    private let lock = NSLock()
+    var deadlines: [Date] { lock.withLock { values } }
+    func record(_ time: Date) { lock.withLock { values.append(time) } }
+}
+
 private final class ControlledCollector: DashboardCollecting, @unchecked Sendable {
     let now = Date(timeIntervalSince1970: 1792540800)
     let lock = NSLock()
@@ -32,6 +47,9 @@ private final class ControlledCollector: DashboardCollecting, @unchecked Sendabl
     let modelGate: ModelGate?
     let sourceWarnings: [String]
     private var scans = 0
+    private var input: CodexLedgerInput?
+    func setLedgerInput(_ readings: CodexLedgerInput) { lock.withLock { input = readings } }
+    func ledgerInputForApp() -> CodexLedgerInput? { lock.withLock { input } }
     private var pollForces: [Bool] = []
     var scanCount: Int { lock.withLock { scans } }
     var requestedPollForces: [Bool] { lock.withLock { pollForces } }
@@ -194,6 +212,91 @@ struct AppViewModelTests {
         for _ in 0..<30 { model.logsDidChange() }
         try await eventually { collector.scanCount == 1 && !model.isRefreshing }
         #expect(collector.requestedPollForces == [false])
+    }
+
+    @Test @MainActor
+    func resetTimerFiresTheLatestDeadlineOnlyOnce() async throws {
+        let recorder = ResetRecorder()
+        let driver = BackgroundRefreshDriver(directories: [], refresh: { trigger in
+            if case let .quotaReset(deadline) = trigger { recorder.record(deadline) }
+        }, render: {})
+        let now = Date()
+        let deadline = now.addingTimeInterval(0.08)
+        driver.scheduleReset(at: now.addingTimeInterval(0.03))
+        driver.scheduleReset(at: deadline)
+        try await eventually { !recorder.deadlines.isEmpty }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.deadlines == [deadline])
+        withExtendedLifetime(driver) {}
+    }
+
+    @Test @MainActor
+    func quotaDeadlineHidesStaleBalanceBeforeScanAndNotificationsDeduplicateAcrossRestart() async throws {
+        let suite = "TokenPulse.Tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let collector = ControlledCollector()
+        let clock = QuotaTestClock(collector.now)
+        let end = clock.now.addingTimeInterval(60)
+        let secondEnd = end.addingTimeInterval(604800)
+        var delivered: [Double] = []
+        func model() -> AppViewModel {
+            AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false,
+                clock: { clock.now }, ledgerDirectory: directory,
+                notificationSink: { observations, _ in delivered += observations.map(\.usedPercent) })
+        }
+        func use(_ percent: Double, until deadline: Date) {
+            let now = clock.now
+            let observation = QuotaObservation(observedAt: now, windowRole: "secondary", windowMinutes: 10080,
+                resetsAt: deadline, usedPercent: percent)
+            collector.setLedgerInput(CodexLedgerInput(observations: [observation], scannedAt: now, sourceAvailable: true))
+        }
+        use(80, until: end)
+        let silent = model()
+        #expect(!silent.quotaNotificationsEnabled)
+        silent.refreshAutomatically()
+        try await eventually { silent.ledger.currentReport?.quotaUsedPercent == 80 && !silent.isRefreshing }
+        #expect(delivered.isEmpty)
+
+        defaults.set(true, forKey: "quotaNotificationsEnabled")
+        let active = model()
+        active.refreshAutomatically()
+        try await eventually { active.ledger.currentReport?.quotaUsedPercent == 80 && !active.isRefreshing }
+        #expect(delivered == [80])
+        #expect(active.lowestQuota?.isLow == true)
+
+        clock.set(clock.now.addingTimeInterval(1))
+        use(100, until: end)
+        let reopened = model()
+        reopened.refreshAutomatically()
+        try await eventually { reopened.ledger.currentReport?.quotaUsedPercent == 100 && !reopened.isRefreshing }
+        #expect(delivered == [80])
+
+        let scans = collector.scanCount
+        clock.set(end)
+        reopened.quotaDeadlineReached(at: end)
+        reopened.quotaDeadlineReached(at: end)
+        #expect(reopened.lowestQuota == nil)
+        #expect(reopened.ledger.currentReport == nil)
+        #expect(reopened.quotaHelp == "Codex 配额待更新")
+        try await eventually { !reopened.isRefreshing }
+        #expect(collector.scanCount == scans + 1)
+        #expect(reopened.ledger.currentReport == nil)
+        #expect(delivered == [80])
+
+        clock.set(end.addingTimeInterval(1))
+        use(5, until: secondEnd)
+        reopened.refreshAutomatically()
+        try await eventually { reopened.ledger.currentReport?.quotaUsedPercent == 5 && !reopened.isRefreshing }
+        #expect(reopened.lowestQuota?.remainingPercent == 95)
+
+        clock.set(end.addingTimeInterval(2))
+        use(95, until: secondEnd)
+        reopened.refreshAutomatically()
+        try await eventually { reopened.ledger.currentReport?.quotaUsedPercent == 95 && !reopened.isRefreshing }
+        #expect(delivered == [80, 95])
     }
 
     @Test @MainActor

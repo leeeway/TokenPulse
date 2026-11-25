@@ -13,10 +13,35 @@ public struct QuotaObservation: Codable, Sendable, Equatable {
         self.resetsAt = resetsAt; self.usedPercent = usedPercent; self.planType = planType
     }
     public var inferredStart: Date { resetsAt.addingTimeInterval(-Double(windowMinutes) * 60) }
-    public var isValidWeeklyObservation: Bool {
-        windowMinutes == 10080 && usedPercent.isFinite && (0...100).contains(usedPercent)
+    public var isValidWeeklyObservation: Bool { windowMinutes == 10080 && isValid }
+    public var isValid: Bool {
+        (1...525600).contains(windowMinutes) && usedPercent.isFinite && (0...100).contains(usedPercent)
             && observedAt.timeIntervalSince1970.isFinite && resetsAt.timeIntervalSince1970.isFinite
-            && resetsAt.timeIntervalSince1970 > 0 && observedAt >= inferredStart && observedAt < resetsAt
+            && resetsAt.timeIntervalSince1970 > 0 && resetsAt.timeIntervalSince1970 <= 253402300799
+            && observedAt >= inferredStart && observedAt < resetsAt
+    }
+
+    public var remainingPercent: Double { 100 - usedPercent }
+    public var isLow: Bool { remainingPercent <= 20 }
+    public func isExpired(at now: Date) -> Bool { resetsAt <= now }
+
+    /// Pick the most recent observation before considering expiry. An older
+    /// overlapping reset cannot become current again when the newest one expires.
+    public static func latestByWindow(_ observations: [Self], at now: Date) -> [Self] {
+        var selected: [Int: Self] = [:]
+        for observation in observations where observation.isValid && observation.observedAt <= now {
+            if let old = selected[observation.windowMinutes], !precedes(old, observation) { continue }
+            selected[observation.windowMinutes] = observation
+        }
+        return selected.values.sorted { $0.windowMinutes < $1.windowMinutes }
+    }
+
+    static func precedes(_ lhs: Self, _ rhs: Self) -> Bool {
+        if lhs.observedAt != rhs.observedAt { return lhs.observedAt < rhs.observedAt }
+        if lhs.resetsAt != rhs.resetsAt { return lhs.resetsAt < rhs.resetsAt }
+        if lhs.usedPercent != rhs.usedPercent { return lhs.usedPercent < rhs.usedPercent }
+        if lhs.planType != rhs.planType { return (lhs.planType ?? "") < (rhs.planType ?? "") }
+        return lhs.windowRole < rhs.windowRole
     }
 }
 
@@ -33,6 +58,10 @@ public struct CodexLedgerInput: Sendable {
         self.sourceAvailable = sourceAvailable; self.warnings = warnings
     }
     public static func empty(scannedAt: Date? = nil) -> Self { Self(scannedAt: scannedAt) }
+
+    public func latestQuotas(at now: Date) -> [QuotaObservation] {
+        sourceAvailable ? QuotaObservation.latestByWindow(observations, at: now) : []
+    }
 }
 
 public struct LedgerUsageTotals: Codable, Sendable, Equatable {
@@ -134,16 +163,15 @@ public enum LedgerReportError: Error, LocalizedError {
 public enum CodexLedgerEngine {
     public static func currentReport(input: CodexLedgerInput, now: Date = Date(), timeZone: TimeZone = .current) -> UsageReportSnapshot? {
         let groups = weeklyGroups(input: input, now: now)
-        // Select the cycle from observations before aggregating any events. Historical
-        // cycles are irrelevant to the current view, even when their logs still exist.
-        let latest = groups.values.compactMap { $0.max(by: observationOrder) }
-            .filter { $0.inferredStart < now && $0.resetsAt > now }
-            .max {
-                if $0.observedAt != $1.observedAt { return $0.observedAt < $1.observedAt }
-                return $0.resetsAt < $1.resetsAt
-            }
-        guard let latest, let group = groups[latest.resetsAt] else { return nil }
+        guard let latest = currentObservation(input: input, now: now),
+              let group = groups[latest.resetsAt] else { return nil }
         return weeklyReport(input: input, group: group, ends: Array(groups.keys), now: now, timeZone: timeZone)
+    }
+
+    static func currentObservation(input: CodexLedgerInput, now: Date) -> QuotaObservation? {
+        guard let latest = input.latestQuotas(at: now).first(where: { $0.isValidWeeklyObservation }),
+              !latest.isExpired(at: now), latest.inferredStart <= now else { return nil }
+        return latest
     }
 
     public static func reports(input: CodexLedgerInput, now: Date = Date(), timeZone: TimeZone = .current) -> [UsageReportSnapshot] {
@@ -172,7 +200,7 @@ public enum CodexLedgerEngine {
 
     private static func weeklyReport(input: CodexLedgerInput, group: [QuotaObservation], ends: [Date],
                                      now: Date, timeZone: TimeZone) -> UsageReportSnapshot? {
-        guard let latest = group.max(by: observationOrder), latest.inferredStart < now else { return nil }
+        guard let latest = group.max(by: QuotaObservation.precedes), latest.inferredStart <= now else { return nil }
         let start = latest.inferredStart, end = latest.resetsAt
         var warnings = input.warnings
         if Set(group.compactMap { $0.planType }.filter { !$0.isEmpty }).count > 1 {
@@ -191,13 +219,6 @@ public enum CodexLedgerEngine {
               start < end, start < now else { throw LedgerReportError.invalidRange }
         return build(input: input, start: start, end: end, now: now, timeZone: timeZone, kind: .custom,
                      observation: nil, warnings: input.warnings)
-    }
-
-    private static func observationOrder(_ lhs: QuotaObservation, _ rhs: QuotaObservation) -> Bool {
-        if lhs.observedAt != rhs.observedAt { return lhs.observedAt < rhs.observedAt }
-        if lhs.usedPercent != rhs.usedPercent { return lhs.usedPercent < rhs.usedPercent }
-        if lhs.planType != rhs.planType { return (lhs.planType ?? "") < (rhs.planType ?? "") }
-        return lhs.windowRole < rhs.windowRole
     }
 
     private static func build(input: CodexLedgerInput, start: Date, end: Date, now: Date, timeZone: TimeZone,

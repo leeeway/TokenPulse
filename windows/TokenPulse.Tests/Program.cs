@@ -365,12 +365,14 @@ await Test("Legacy settings retain defaults and new preferences persist together
     using var folder = new TestDirectory();
     var store = new SettingsStore(Path.Combine(folder.Path, "settings.json"));
     var legacy = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(folder.Settings))!.AsObject();
-    foreach (var key in new[] { "EnableClaude", "EnableCodex", "EnableAntigravity", "EnableCustom", "BurnRateTokens", "BurnRateUSD" }) legacy.Remove(key);
+    foreach (var key in new[] { "EnableClaude", "EnableCodex", "EnableAntigravity", "EnableCustom", "BurnRateTokens", "BurnRateUSD", "EnableQuotaNotifications" }) legacy.Remove(key);
     File.WriteAllText(store.FilePath, legacy.ToJsonString());
     var (loaded, warning) = store.Load();
     Check(warning is null && loaded.LogSources().All(s => s.Enabled), "legacy source defaults changed");
     Equal(250000L, loaded.BurnRateTokens); Near(1.5, loaded.BurnRateUSD);
-    var changed = loaded with { EnableClaude = false, EnableAntigravity = false, BurnRateTokens = 500000, BurnRateUSD = 0 };
+    Check(!loaded.EnableQuotaNotifications, "quota notifications must be opt-in");
+    var changed = loaded with { EnableClaude = false, EnableAntigravity = false, BurnRateTokens = 500000, BurnRateUSD = 0,
+        EnableQuotaNotifications = true };
     store.Save(changed); Equal(changed, store.Load().Settings);
     File.WriteAllText(store.FilePath, JsonSerializer.Serialize(changed with { BurnRateTokens = -1 }));
     Check(store.Load().Warning is not null, "corrupt thresholds should be visible");

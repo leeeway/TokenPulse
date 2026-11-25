@@ -18,7 +18,7 @@ struct LedgerView: View {
 
     private var report: UsageReportSnapshot? {
         switch page {
-        case .current: return model.state.current
+        case .current: return model.currentReport
         case .history: return model.state.history.first { $0.id == historyID } ?? model.state.history.first
         case .custom: return model.customReport
         }

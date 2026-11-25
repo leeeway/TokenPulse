@@ -9,6 +9,37 @@ public sealed record QuotaObservation(DateTimeOffset RecordedAtUtc, string Windo
 {
     [JsonIgnore] public DateTimeOffset StartUtc => ResetsAtUtc.AddMinutes(-WindowMinutes);
     [JsonIgnore] public bool IsWeekly => WindowMinutes == 10080;
+    [JsonIgnore] public bool IsValid => WindowMinutes is > 0 and <= 525600
+        && double.IsFinite(UsedPercent) && UsedPercent is >= 0 and <= 100
+        && ResetsAtUtc > DateTimeOffset.UnixEpoch
+        && RecordedAtUtc < ResetsAtUtc && ResetsAtUtc - RecordedAtUtc <= TimeSpan.FromMinutes(WindowMinutes);
+    [JsonIgnore] public double RemainingPercent => 100 - UsedPercent;
+    [JsonIgnore] public bool IsLow => RemainingPercent <= 20;
+    public bool IsExpired(DateTimeOffset now) => ResetsAtUtc <= now;
+
+    public static QuotaObservation[] LatestByWindow(IEnumerable<QuotaObservation> observations, DateTimeOffset now)
+    {
+        var readings = new Dictionary<int, QuotaObservation>();
+        foreach (var observation in observations)
+        {
+            if (!observation.IsValid || observation.RecordedAtUtc > now) continue;
+            if (!readings.TryGetValue(observation.WindowMinutes, out var previous) || Compare(previous, observation) < 0)
+                readings[observation.WindowMinutes] = observation;
+        }
+        return readings.Values.OrderBy(o => o.WindowMinutes).ToArray();
+    }
+
+    internal static int Compare(QuotaObservation left, QuotaObservation right)
+    {
+        var time = left.RecordedAtUtc.CompareTo(right.RecordedAtUtc);
+        if (time != 0) return time;
+        var reset = left.ResetsAtUtc.CompareTo(right.ResetsAtUtc);
+        if (reset != 0) return reset;
+        var percent = left.UsedPercent.CompareTo(right.UsedPercent);
+        if (percent != 0) return percent;
+        var plan = string.CompareOrdinal(left.PlanType ?? "", right.PlanType ?? "");
+        return plan != 0 ? plan : string.CompareOrdinal(left.WindowRole, right.WindowRole);
+    }
     [JsonIgnore] public string Key => ResetsAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) + "/10080";
 }
 public sealed record QuotaTotals(long Input, long CacheWrite, long CacheRead, long Output, long Reasoning,
@@ -43,7 +74,10 @@ public sealed record QuotaLedgerDocument(int SchemaVersion, string PricingVersio
     public static QuotaLedgerDocument Empty => new(1, Pricing.CatalogVersion, null, null, []);
 }
 public sealed record QuotaLedgerView(IReadOnlyList<QuotaCycle> Cycles, QuotaReport? Current, bool NativeSourceAvailable,
-    string Status, bool StoreCorrupt, DateTimeOffset? ClearedEndedBeforeUtc);
+    string Status, bool StoreCorrupt, DateTimeOffset? ClearedEndedBeforeUtc)
+{
+    public bool AwaitingResetUpdate { get; init; }
+}
 
 /// <summary>Native-only UTC aggregation. Reports are immutable snapshots and never contain raw identifiers.</summary>
 public static class QuotaReports
@@ -146,13 +180,15 @@ public sealed class QuotaLedgerSession
     private ScanResult? lastScan;
     private bool enabled;
     private DateTimeOffset lastSnapshot;
+    private QuotaReport? currentReport;
+    private QuotaObservation? latestWeekly;
     private string? warning;
     private bool corrupt;
     private long generation;
     public long Generation { get { lock (gate) return generation; } }
     public void Suspend(bool sourceEnabled)
     {
-        lock (gate) { generation++; enabled = sourceEnabled; lastScan = null; }
+        lock (gate) { generation++; enabled = sourceEnabled; lastScan = null; currentReport = null; latestWeekly = null; }
     }
     public QuotaLedgerSession(QuotaLedgerStore? storage = null)
     {
@@ -166,15 +202,17 @@ public sealed class QuotaLedgerSession
         {
             if (expectedGeneration is { } expected && expected != generation) return;
             lastScan = scan; enabled = sourceEnabled; lastSnapshot = snapshot.ToUniversalTime();
+            latestWeekly = SourceAvailable ? scan.LatestQuotas(lastSnapshot).FirstOrDefault(o => o.IsWeekly) : null;
+            currentReport = latestWeekly is { } weekly && !weekly.IsExpired(lastSnapshot) ? Current(scan, lastSnapshot, weekly) : null;
             var retained = (rebuild ? Array.Empty<QuotaCycle>() : document.Cycles)
                 .Where(c => c.Report.EndUtc > lastSnapshot.AddDays(-90)).ToDictionary(c => c.Key, StringComparer.Ordinal);
             if (SourceAvailable)
             {
-                var groups = scan.QuotaObservations.Where(o => o.IsWeekly && o.RecordedAtUtc <= lastSnapshot)
+                var groups = scan.QuotaObservations.Where(o => o.IsWeekly && o.IsValid && o.RecordedAtUtc <= lastSnapshot)
                     .GroupBy(o => o.Key).OrderBy(g => g.Key, StringComparer.Ordinal);
                 foreach (var group in groups)
                 {
-                    var all = group.OrderBy(o => o.RecordedAtUtc).ThenBy(o => o.WindowRole, StringComparer.Ordinal).ToArray();
+                    var all = group.Order(Comparer<QuotaObservation>.Create(QuotaObservation.Compare)).ToArray();
                     var first = all[0]; var stop = first.ResetsAtUtc < lastSnapshot ? first.ResetsAtUtc : lastSnapshot;
                     var observations = all.Where(o => o.RecordedAtUtc >= first.StartUtc && o.RecordedAtUtc < stop).ToArray();
                     if (observations.Length == 0 || first.ResetsAtUtc <= lastSnapshot.AddDays(-90)) continue;
@@ -201,24 +239,23 @@ public sealed class QuotaLedgerSession
             { warning = "账本保存失败，旧文件已保留：" + ex.Message; }
         }
     }
-    public QuotaLedgerView View()
+    public QuotaLedgerView View(DateTimeOffset? now = null)
     {
         lock (gate)
         {
-            var current = SourceAvailable && lastScan is { } scan ? Current(scan, lastSnapshot) : null;
+            var waiting = latestWeekly?.IsExpired(now ?? lastSnapshot) == true;
+            var current = waiting ? null : currentReport;
             var status = warning ?? (!enabled ? "原生 Codex 来源已关闭，历史归档仍保留。"
                 : !SourceAvailable ? "原生 Codex 来源读取失败或尚未扫描，当前周期不可确认。"
+                : waiting ? "周配额已到重置时间，等待新周期日志。"
                 : current is null ? "日志未提供可确认的当前周配额周期；不会推算新周期或归零。" : "仅本机原生 Codex 日志；账本保留最近 90 天。");
-            return new(document.Cycles, current, SourceAvailable, status, corrupt, document.ClearedEndedBeforeUtc);
+            return new(document.Cycles, current, SourceAvailable, status, corrupt, document.ClearedEndedBeforeUtc)
+                { AwaitingResetUpdate = waiting };
         }
     }
-    private QuotaReport? Current(ScanResult scan, DateTimeOffset snapshot)
+    private static QuotaReport Current(ScanResult scan, DateTimeOffset snapshot, QuotaObservation observation)
     {
-        var observation = scan.QuotaObservations.Where(o => o.IsWeekly && o.RecordedAtUtc <= snapshot
-            && o.RecordedAtUtc >= o.StartUtc && o.ResetsAtUtc > snapshot).OrderByDescending(o => o.RecordedAtUtc)
-            .ThenBy(o => o.Key, StringComparer.Ordinal).FirstOrDefault();
-        if (observation is null) return null;
-        var conflict = scan.QuotaObservations.Any(o => o.IsWeekly && o.Key != observation.Key
+        var conflict = scan.QuotaObservations.Any(o => o.IsWeekly && o.IsValid && o.Key != observation.Key
             && o.StartUtc < observation.ResetsAtUtc && o.ResetsAtUtc > observation.StartUtc && o.RecordedAtUtc <= snapshot);
         var report = QuotaReports.Build(scan.NativeCodexEvents, observation.StartUtc, observation.ResetsAtUtc, snapshot,
             "current", observation, "仅本机现存原生 Codex 日志；周期起点为推定，金额为兼容估算。"

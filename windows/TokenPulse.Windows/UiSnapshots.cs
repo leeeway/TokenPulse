@@ -27,9 +27,22 @@ internal static class UiSnapshots
         var changed = 0;
         var settingsOpened = 0;
         var window = new MainWindow(() => { }, () => settingsOpened++, () => changed++);
+        void RenderDashboard(DashboardSnapshot snapshot, ScanResult input, OllamaResult ollama)
+        {
+            // Fixtures model native observations separately from compatibility RateLimits.
+            var observations = input.RateLimits.SelectMany(limit => new[] { limit.Primary, limit.Secondary }
+                .OfType<QuotaWindow>().Where(q => q.UsageReported && q.WindowMinutes.HasValue && q.ResetsAt.HasValue)
+                .Select(q => new QuotaObservation(
+                    limit.UpdatedAt < q.ResetsAt!.Value ? limit.UpdatedAt : q.ResetsAt.Value.AddSeconds(-1),
+                    "primary", q.WindowMinutes!.Value, q.ResetsAt.Value, q.UsedPercent, limit.PlanType)));
+            var quotas = (input with { QuotaObservations = observations.ToArray() }).LatestQuotas(snapshot.GeneratedAt);
+            window.UpdateQuota(quotas, snapshot.GeneratedAt, input.RateLimits.Count > 0);
+            window.Render(snapshot, input, ollama);
+        }
+
         try
         {
-            window.Render(Aggregation.Build(scan, TimeWindow.Today, now), scan, models);
+            RenderDashboard(Aggregation.Build(scan, TimeWindow.Today, now), scan, models);
             await ShowAndCapture(window, directory, "dashboard-warning");
             foreach (var size in new[] { new Size(1920, 1080), new Size(2560, 1440), new Size(3840, 2160) })
                 CaptureViewport(window, directory, $"dashboard-wide-{(int)size.Width}", size);
@@ -55,15 +68,15 @@ internal static class UiSnapshots
             window.Close();
             if (window.IsVisible) throw new InvalidOperationException("Closing the dashboard must hide it.");
             var calm = scan with { Events = events.Select(e => e == today ? e with { Timestamp = now.AddHours(-1) } : e).ToArray() };
-            window.Render(Aggregation.Build(calm, TimeWindow.Today, now), calm, models);
+            RenderDashboard(Aggregation.Build(calm, TimeWindow.Today, now), calm, models);
             await ShowAndCapture(window, directory, "dashboard-normal");
             VerifyQuotaStatus(window, "剩余 71% · 充足", Ui.Green);
             var empty = new ScanResult([], [], sources.Select(s => s with { State = SourceState.Missing, Message = "未发现日志" }).ToArray());
-            window.Render(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
+            RenderDashboard(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
             await ShowAndCapture(window, directory, "dashboard-empty");
             var large = new ScanResult([today with { InputTokens = 91_000_000, CacheReadTokens = 1_154_000_000, CostUSD = 1_234_567.8 }], [], sources);
             window.Width = 420;
-            window.Render(Aggregation.Build(large, TimeWindow.Today, now), large, models);
+            RenderDashboard(Aggregation.Build(large, TimeWindow.Today, now), large, models);
             await ShowAndCapture(window, directory, "dashboard-large-values");
             var more = new[]
             {
@@ -74,7 +87,7 @@ internal static class UiSnapshots
             };
             var mixed = new ScanResult(more, [quota with { Primary = new(95.2, 300, now.AddHours(2)), Secondary = new(29, 10080, now.AddDays(2)) }],
                 sources.Select(s => s.Provider == Providers.Claude ? s with { State = SourceState.Error, Path = @"C:\Users\示例用户\开发工作区\自定义会话与日志\Claude Code\projects", Message = "访问失败：需要检查目录权限" } : s).ToArray());
-            window.Width = 420; window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, new([new("qwen-local", 8_000_000_000, 6_000_000_000)], "Ollama 已连接"));
+            window.Width = 420; RenderDashboard(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, new([new("qwen-local", 8_000_000_000, 6_000_000_000)], "Ollama 已连接"));
             await ShowAndCapture(window, directory, "dashboard-narrow-multiple");
             VerifyQuotaStatus(window, $"剩余 {4.8:0.#}% · 余量偏低", Ui.Brush("#CB3746"));
             if (!Descendants<TextBlock>(window).Any(t => t.Text == "重置 " + now.AddHours(2).LocalDateTime.ToString("MM/dd HH:mm")))
@@ -82,57 +95,58 @@ internal static class UiSnapshots
             var modelToggle = Descendants<Button>(window).Single(b => Equals(b.Content, "最近 2 个模型  +"));
             modelToggle.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             // The four-second refresh must not collapse details the user is reading.
-            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
+            RenderDashboard(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
             if (!Descendants<Button>(window).Contains(modelToggle))
                 throw new InvalidOperationException("Unchanged refresh rebuilt interactive model rows.");
             await ShowAndCapture(window, directory, "dashboard-model-details");
             if (Descendants<StackPanel>(window).Count(p => p.Name == "ModelDetails" && p.Visibility == Visibility.Visible) != 1)
                 throw new InvalidOperationException("Model expansion did not survive refresh.");
             var expired = mixed with { RateLimits = [quota with { Primary = new(95, 300, now.AddSeconds(-1)), Secondary = new(29, 10080, now.AddDays(2)) }] };
-            window.Render(Aggregation.Build(expired, TimeWindow.Today, now), expired, models);
+            RenderDashboard(Aggregation.Build(expired, TimeWindow.Today, now), expired, models);
             await ShowAndCapture(window, directory, "dashboard-expired-quota");
             VerifyQuotaStatus(window, "待更新", Ui.Muted);
             if (Descendants<Border>(window).Count(b => b.Name == "QuotaRemainingFill") != 1)
                 throw new InvalidOperationException("Expired quota has a filled progress bar.");
             // Expiry must update even when the underlying log has not changed.
-            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
-            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now.AddHours(3)), mixed, models);
+            RenderDashboard(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
+            RenderDashboard(Aggregation.Build(mixed, TimeWindow.Today, now.AddHours(3)), mixed, models);
             VerifyQuotaStatus(window, "待更新", Ui.Muted);
 
             var boundaries = mixed with { RateLimits = [quota with { Primary = new(50, 300, now.AddHours(2)), Secondary = new(80, 10080, now.AddDays(2)) }] };
-            window.Render(Aggregation.Build(boundaries, TimeWindow.Today, now), boundaries, models);
+            RenderDashboard(Aggregation.Build(boundaries, TimeWindow.Today, now), boundaries, models);
             await ShowAndCapture(window, directory, "dashboard-quota-thresholds");
             VerifyQuotaStatus(window, "剩余 50% · 需留意", Ui.Brush("#C87016"));
             VerifyQuotaStatus(window, "剩余 20% · 余量偏低", Ui.Brush("#CB3746"));
 
             var noCapacity = mixed with { RateLimits = [quota with { Primary = new(100, 300, now.AddHours(2)),
                 Secondary = new(0, 10080, now.AddDays(2)) { UsageReported = false } }] };
-            window.Render(Aggregation.Build(noCapacity, TimeWindow.Today, now), noCapacity, models);
+            RenderDashboard(Aggregation.Build(noCapacity, TimeWindow.Today, now), noCapacity, models);
             await ShowAndCapture(window, directory, "dashboard-quota-exhausted-unknown");
             VerifyQuotaStatus(window, "剩余 0% · 已用尽", Ui.Brush("#CB3746"));
-            VerifyQuotaStatus(window, "余量未知", Ui.Muted);
             if (Descendants<Border>(window).Any(b => b.Name == "QuotaRemainingFill"))
                 throw new InvalidOperationException("Exhausted or unknown quota has a filled progress bar.");
+            window.UpdateQuota([], now, hasUnverified: true);
+            VerifyQuotaStatus(window, "余量未知", Ui.Muted);
             var export = Descendants<Button>(window).Single(b => Equals(b.ToolTip, "导出当前周期的模型用量 CSV"));
             if (!export.IsEnabled) throw new InvalidOperationException("Rendered summary cannot be exported.");
             radio.IsChecked = true;
             if (export.IsEnabled) throw new InvalidOperationException("Export must wait for the new period's summary.");
             Descendants<RadioButton>(window).Single(r => Equals(r.Content, "今日")).IsChecked = true;
-            window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
+            RenderDashboard(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
             window.SetSourcesExpanded(true);
             Descendants<ScrollViewer>(window).Single(s => s.Name == "DashboardScroll").ScrollToEnd();
             await ShowAndCapture(window, directory, "dashboard-source-details");
             window.SetSourcesExpanded(false);
             Descendants<ScrollViewer>(window).Single(s => s.Name == "DashboardScroll").ScrollToTop();
             var disabled = new ScanResult([], [], sources.Select(s => s with { State = SourceState.Disabled, Message = "已关闭 · 不扫描" }).ToArray());
-            window.Render(Aggregation.Build(disabled, TimeWindow.Today, now), disabled, new([], "Ollama 查询已关闭"));
+            RenderDashboard(Aggregation.Build(disabled, TimeWindow.Today, now), disabled, new([], "Ollama 查询已关闭"));
             await ShowAndCapture(window, directory, "dashboard-sources-disabled");
             if (!Descendants<TextBlock>(window).Any(t => t.Text == "日志扫描已关闭"))
                 throw new InvalidOperationException("Disabled sources were presented as missing logs.");
             Descendants<Button>(window).Single(b => Equals(b.Content, "设置数据源"))
                 .RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             if (settingsOpened != 1) throw new InvalidOperationException("Empty-state settings action was not wired.");
-            window.Render(Aggregation.Build(scan, TimeWindow.Today, now) with { AlertThresholds = new(0, 0) }, scan, models);
+            RenderDashboard(Aggregation.Build(scan, TimeWindow.Today, now) with { AlertThresholds = new(0, 0) }, scan, models);
             if (Descendants<Border>(window).Single(b => b.Name == "HighBurnAlert").Visibility != Visibility.Collapsed)
                 throw new InvalidOperationException("Disabled burn warning remains visible.");
             await ShowAndCapture(window, directory, "dashboard-alerts-disabled");
@@ -142,7 +156,7 @@ internal static class UiSnapshots
                 [new(Providers.Codex, sources[0].Path, SourceState.Warning,
                     "已读取 1 个文件 · 1 条用量记录 · 2 行 JSON 损坏，已跳过 · 1 个末行疑似未写完，等待追加 · 1 条时间未知，仅计入全部用量")]);
             window.SetSourcesExpanded(true);
-            window.Render(Aggregation.Build(uncertain, TimeWindow.Today, now), uncertain, models);
+            RenderDashboard(Aggregation.Build(uncertain, TimeWindow.Today, now), uncertain, models);
             if (Descendants<Border>(window).Single(b => b.Name == "HighBurnAlert").Visibility != Visibility.Collapsed
                 || !Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("1 条记录时间未知") && t.Visibility == Visibility.Visible && t.TextWrapping == TextWrapping.Wrap)
                 || !Descendants<TextBlock>(window).Any(t => t.Text == "当前周期没有可确认时间的记录")
@@ -159,7 +173,7 @@ internal static class UiSnapshots
                 }).ToArray();
             var compactScan = new ScanResult(compactEvents, [quota with { Primary = new(29, 300, null) }], sources);
             window.SetSourcesExpanded(false);
-            window.Render(Aggregation.Build(compactScan, TimeWindow.Today, now), compactScan, models);
+            RenderDashboard(Aggregation.Build(compactScan, TimeWindow.Today, now), compactScan, models);
             if (Descendants<Border>(window).Count(b => b.Name == "ProviderCard") != 3
                 || !Descendants<TextBlock>(window).Any(t => t.Text == "日志未提供重置时间"))
                 throw new InvalidOperationException("Compact product limit or unknown reset time failed.");
@@ -172,7 +186,7 @@ internal static class UiSnapshots
                 Descendants<Button>(window).Single(b => Equals(b.Content, "最近 3 个模型  +"))
                     .RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             await ShowAndCapture(window, directory, "dashboard-latest-three");
-            window.Render(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
+            RenderDashboard(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
             if (!Descendants<TextBlock>(window).Any(t => t.Text == "等待第一条用量记录")
                 || Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("0 条记录时间未知") && t.Visibility == Visibility.Visible))
                 throw new InvalidOperationException("Data-quality notice or empty state did not clear on refresh.");
@@ -296,6 +310,21 @@ internal static class UiSnapshots
                     throw new InvalidOperationException("Disabled native source left a current report export enabled.");
                 session.Update(new([], [], [ready with { State = SourceState.Error, Message = "合成访问失败" }]), true, now);
                 window.Refresh(); await ShowAndCapture(window, directory, "quota-ledger-source-error");
+
+                session.Update(scan, true, now);
+                window.Refresh();
+                window.AdvanceQuotaClock(end);
+                VerifyQuotaStatus(window, "待更新", Ui.Muted);
+                if (Descendants<Button>(window).Single(b => Equals(b.Content, "导出 HTML 与 CSV")).IsEnabled)
+                    throw new InvalidOperationException("Expired current week can still be exported as current.");
+                await ShowAndCapture(window, directory, "quota-ledger-waiting-after-reset");
+                var fresh = new QuotaObservation(end.AddSeconds(1), "secondary", 10080, end.AddDays(7), 5, "team");
+                session.Update(scan with { QuotaObservations = [.. scan.QuotaObservations, fresh] }, true, fresh.RecordedAtUtc);
+                window.Refresh();
+                VerifyQuotaStatus(window, "充足", Ui.Green);
+                if (!Descendants<TextBlock>(window).Any(t => t.Text == "95%"))
+                    throw new InvalidOperationException("New weekly observation did not restore the balance.");
+                await ShowAndCapture(window, directory, "quota-ledger-new-cycle");
             }
             finally { window.Close(); }
             var emptySession = new QuotaLedgerSession(new QuotaLedgerStore(Path.Combine(temporary, "empty.json")));

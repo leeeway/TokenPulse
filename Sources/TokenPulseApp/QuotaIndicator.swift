@@ -1,4 +1,5 @@
 import SwiftUI
+import TokenPulseCore
 
 enum QuotaIndicator: Equatable {
     case ample(Double), watch(Double), low(Double), exhausted, awaitingUpdate, unknown
@@ -48,6 +49,13 @@ enum QuotaIndicator: Equatable {
         case .low, .exhausted: .red
         case .awaitingUpdate, .unknown: .gray
         }
+    }
+
+    static func summary(of observation: QuotaObservation, at now: Date) -> String {
+        let indicator = Self(usedPercent: observation.usedPercent, expired: observation.isExpired(at: now))
+        let remaining = indicator.percentText.map { "剩余 \($0) · \(indicator.status)" } ?? indicator.status
+        return "Codex \(TokenFormatters.quotaWindow(observation.windowMinutes)) \(remaining) · "
+            + TokenFormatters.quotaReset(observation.resetsAt, now: now)
     }
 
     var dot: some View {

@@ -7,6 +7,7 @@ namespace TokenPulse.Windows;
 internal sealed class QuotaLedgerWindow : Window
 {
     private readonly QuotaLedgerSession session;
+    private readonly Func<DateTimeOffset>? clock;
     private readonly TextBlock status = Ui.Text("", 11, Ui.Muted);
     private readonly TextBlock operation = Ui.Text("", 10.5, Ui.Muted);
     private readonly StackPanel reportBody = new();
@@ -26,16 +27,18 @@ internal sealed class QuotaLedgerWindow : Window
     private string historySignature = "";
     private QuotaLedgerView? lastView;
 
-    public QuotaLedgerWindow(QuotaLedgerSession session)
+    public QuotaLedgerWindow(QuotaLedgerSession session, Action? refresh = null, Func<DateTimeOffset>? clock = null)
     {
         this.session = session;
+        this.clock = clock;
         Title = $"TokenPulse 配额账本 · {Ui.Version}";
         Width = 880; Height = 820; MinWidth = 520; MinHeight = 540;
         ShowInTaskbar = true; WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Ui.ConfigureWindow(this);
         var root = new DockPanel { Name = "QuotaLedgerContent", Margin = new Thickness(22, 18, 22, 16) };
         var top = new StackPanel();
-        top.Children.Add(Ui.Header(this, "配额账本", "原生 Codex · 冻结时区 · 最近 90 天摘要"));
+        top.Children.Add(Ui.Header(this, "配额账本", "原生 Codex · 冻结时区 · 最近 90 天摘要",
+            refresh is null ? [] : [Ui.IconButton("\uE72C", "刷新本地日志", refresh)]));
         var tabs = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1, Columns = 3 };
         foreach (var (label, value) in new[] { ("当前周期", "current"), ("历史账本", "history"), ("自定义", "custom") })
         {
@@ -89,9 +92,17 @@ internal sealed class QuotaLedgerWindow : Window
         AutomationProperties.SetName(input, label); panel.Children.Add(input); Ui.Put(row, panel, column);
     }
 
-    public void Refresh()
+    public void Refresh() => Present(session.View(clock?.Invoke()));
+
+    public void AdvanceQuotaClock(DateTimeOffset now)
     {
-        var view = session.View(); lastView = view;
+        if (lastView is { Current: { } report } view && report.EndUtc <= now)
+            Present(view with { Current = null, AwaitingResetUpdate = true, Status = "周配额已到重置时间，等待新周期日志。" });
+    }
+
+    private void Present(QuotaLedgerView view)
+    {
+        lastView = view;
         status.Text = view.Status;
         status.Foreground = view.StoreCorrupt || !view.NativeSourceAvailable ? Ui.Amber : Ui.Muted;
         var cycles = view.Cycles.OrderByDescending(c => c.Report.EndUtc).ThenBy(c => c.Key, StringComparer.Ordinal).ToArray();
@@ -137,10 +148,10 @@ internal sealed class QuotaLedgerWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(Ui.Text(mode == "history" ? "还没有可用历史数字摘要" : mode == "custom"
-            ? "选择本地时间范围后生成冻结快照" : "当前周配额尚无可靠记录", 17, Ui.Ink, FontWeights.SemiBold));
+            ? "选择本地时间范围后生成冻结快照" : view.AwaitingResetUpdate ? "周配额待更新" : "当前周配额尚无可靠记录", 17, Ui.Ink, FontWeights.SemiBold));
         if (mode == "current")
         {
-            var indicator = QuotaIndicator.FromUsage(null);
+            var indicator = QuotaIndicator.FromUsage(null, view.AwaitingResetUpdate);
             Ui.Gap(panel, 5);
             panel.Children.Add(indicator.StatusLabel(indicator.Status));
         }
@@ -166,7 +177,7 @@ internal sealed class QuotaLedgerWindow : Window
         var numbers = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Rows = 1 };
         if (report.Quota is not { } quota)
             NumberCard(numbers, "周配额", "未绑定", Ui.Muted);
-        else if (archived == true)
+        else if (mode == "history")
             NumberCard(numbers, "末次观测周配额 · 已用", quota.UsedPercent.ToString("0.##", CultureInfo.InvariantCulture) + "%", Ui.Muted);
         else
         {
@@ -182,7 +193,7 @@ internal sealed class QuotaLedgerWindow : Window
         {
             Ui.Gap(intro, 6);
             intro.Children.Add(Ui.Text($"配额记录 {Date(observation.RecordedAtUtc)} UTC · {observation.WindowMinutes} 分钟 · {observation.WindowRole}", 10.5, Ui.Muted));
-            var resetLabel = archived == true || observation.ResetsAtUtc <= report.GeneratedAtUtc ? "周期重置 " : "下次重置 ";
+            var resetLabel = mode == "history" || observation.ResetsAtUtc <= report.GeneratedAtUtc ? "周期重置 " : "下次重置 ";
             intro.Children.Add(Ui.Text(resetLabel + Date(observation.ResetsAtUtc) + " UTC · 套餐 " + (string.IsNullOrWhiteSpace(observation.PlanType) ? "未知" : observation.PlanType), 10.5, Ui.Muted));
         }
         if (report.FirstObserved100AtUtc is { } exhausted)
