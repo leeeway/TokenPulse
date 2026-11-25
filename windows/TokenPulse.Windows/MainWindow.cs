@@ -297,12 +297,19 @@ internal sealed class MainWindow : Window
         var duration = quota.WindowMinutes is { } minutes ? minutes % 1440 == 0 ? $"{minutes / 1440} 天" : minutes % 60 == 0 ? $"{minutes / 60} 小时" : $"{minutes} 分钟" : "窗口";
         var label = Ui.Columns(new(1, GridUnitType.Star), GridLength.Auto); Ui.Put(label, Ui.Text(duration + "配额", 10, Ui.Muted), 0);
         var expired = quota.IsExpired(now);
-        var color = expired ? Ui.Muted : quota.UsedPercent >= 90 ? Ui.Amber : Ui.Accent;
-        Ui.Put(label, Ui.Text(expired ? "已到重置时间 · 待更新" : $"已用 {quota.UsedPercent:F1}%", 10, color), 1); panel.Children.Add(label);
-        var pct = Math.Clamp(quota.UsedPercent, 0, 100); var bar = Ui.Columns(new(pct, GridUnitType.Star), new(100 - pct, GridUnitType.Star)); Ui.Put(bar, new Border { Background = color, CornerRadius = new CornerRadius(2) }, 0);
-        var track = new Border { Child = bar, Height = 4, Opacity = expired ? .35 : 1, Background = Ui.Brush("#EEEDF7"), CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 6, 0, 0) };
+        var indicator = QuotaIndicator.FromUsage(quota.UsageReported ? quota.UsedPercent : null, expired);
+        var status = indicator.PercentText is { } percent ? $"剩余 {percent} · {indicator.Status}" : indicator.Status;
+        Ui.Put(label, indicator.StatusLabel(status), 1);
+        panel.Children.Add(label);
+        var track = new Border { Height = 4, Background = Ui.Brush("#EEEDF7"), CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 6, 0, 0) };
+        if (indicator.RemainingPercent is { } remaining && remaining > 0)
+        {
+            var bar = Ui.Columns(new(remaining, GridUnitType.Star), new(100 - remaining, GridUnitType.Star));
+            Ui.Put(bar, new Border { Name = "QuotaRemainingFill", Background = indicator.Color, CornerRadius = new CornerRadius(2) }, 0);
+            track.Child = bar;
+        }
         track.ToolTip = (quota.ResetsAt is { } reset ? $"重置于 {reset.LocalDateTime:g}" : "日志未提供重置时间") +
-            (expired ? $"；上次记录已用 {quota.UsedPercent:F1}%，等待新的日志确认" : "");
+            (expired && quota.UsageReported ? $"；上次记录已用 {quota.UsedPercent:F1}%，等待新的日志确认" : "");
         panel.Children.Add(track);
         var resetText = Ui.Text(quota.ResetsAt is { } resetAt
             ? (expired ? "上次重置 " : "重置 ") + resetAt.LocalDateTime.ToString(resetAt.LocalDateTime.Year == now.LocalDateTime.Year ? "MM/dd HH:mm" : "yyyy/MM/dd HH:mm")

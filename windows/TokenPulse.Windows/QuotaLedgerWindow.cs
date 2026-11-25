@@ -138,6 +138,12 @@ internal sealed class QuotaLedgerWindow : Window
         var panel = new StackPanel();
         panel.Children.Add(Ui.Text(mode == "history" ? "还没有可用历史数字摘要" : mode == "custom"
             ? "选择本地时间范围后生成冻结快照" : "当前周配额尚无可靠记录", 17, Ui.Ink, FontWeights.SemiBold));
+        if (mode == "current")
+        {
+            var indicator = QuotaIndicator.FromUsage(null);
+            Ui.Gap(panel, 5);
+            panel.Children.Add(indicator.StatusLabel(indicator.Status));
+        }
         Ui.Gap(panel, 8);
         panel.Children.Add(Ui.Text(!view.NativeSourceAvailable
             ? "当前原生 Codex 来源不可用。已保留的历史可在「历史账本」中查看和导出。"
@@ -158,17 +164,26 @@ internal sealed class QuotaLedgerWindow : Window
         Ui.Gap(intro, 5); intro.Children.Add(Ui.Text("快照 " + Date(report.GeneratedAtUtc) + " UTC", 10.5, Ui.Muted));
         Ui.Gap(intro, 10);
         var numbers = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Rows = 1 };
-        NumberCard(numbers, "日志配额观察", report.Quota is { } q ? q.UsedPercent.ToString("0.##", CultureInfo.InvariantCulture) + "%" : "未绑定", Ui.Accent);
+        if (report.Quota is not { } quota)
+            NumberCard(numbers, "周配额", "未绑定", Ui.Muted);
+        else if (archived == true)
+            NumberCard(numbers, "末次观测周配额 · 已用", quota.UsedPercent.ToString("0.##", CultureInfo.InvariantCulture) + "%", Ui.Muted);
+        else
+        {
+            var indicator = QuotaIndicator.FromUsage(quota.UsedPercent, quota.ResetsAtUtc <= report.GeneratedAtUtc);
+            NumberCard(numbers, "本轮周配额 · 剩余", indicator.PercentText ?? "—", Ui.Ink, indicator);
+        }
         NumberCard(numbers, "原生 Token 合计", Formatting.Tokens(report.Totals.Total), Ui.Blue);
         NumberCard(numbers, "等效 API 金额", Formatting.Usd(report.Totals.EstimatedUSD), Ui.Amber);
         intro.Children.Add(numbers); Ui.Gap(intro, 10);
         intro.Children.Add(Ui.Text($"{Boundary(report.StartLocal, report.StartUtc)} 至 {Boundary(report.EndLocal, report.EndUtc)}", 11, Ui.Ink));
         intro.Children.Add(Ui.Text("冻结时区 " + report.TimeZoneId + " · 统计截至 " + Boundary(report.StatisticsEndLocal, report.StatisticsEndUtc) + "，不包含截止时刻。", 10.5, Ui.Muted));
-        if (report.Quota is { } quota)
+        if (report.Quota is { } observation)
         {
             Ui.Gap(intro, 6);
-            intro.Children.Add(Ui.Text($"配额记录 {Date(quota.RecordedAtUtc)} UTC · {quota.WindowMinutes} 分钟 · {quota.WindowRole}", 10.5, Ui.Muted));
-            intro.Children.Add(Ui.Text("下次重置 " + Date(quota.ResetsAtUtc) + " UTC · 套餐 " + (string.IsNullOrWhiteSpace(quota.PlanType) ? "未知" : quota.PlanType), 10.5, Ui.Muted));
+            intro.Children.Add(Ui.Text($"配额记录 {Date(observation.RecordedAtUtc)} UTC · {observation.WindowMinutes} 分钟 · {observation.WindowRole}", 10.5, Ui.Muted));
+            var resetLabel = archived == true || observation.ResetsAtUtc <= report.GeneratedAtUtc ? "周期重置 " : "下次重置 ";
+            intro.Children.Add(Ui.Text(resetLabel + Date(observation.ResetsAtUtc) + " UTC · 套餐 " + (string.IsNullOrWhiteSpace(observation.PlanType) ? "未知" : observation.PlanType), 10.5, Ui.Muted));
         }
         if (report.FirstObserved100AtUtc is { } exhausted)
             intro.Children.Add(Ui.Text("首次观测 100% " + Date(exhausted) + " UTC；之后真实用量仍计入。", 10.5, Ui.Amber));
@@ -203,11 +218,19 @@ internal sealed class QuotaLedgerWindow : Window
     }
     private static string Count(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
-    private static void NumberCard(Panel parent, string label, string value, Brush color)
+    private static void NumberCard(Panel parent, string label, string value, Brush color, QuotaIndicator? quota = null)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 0, 9, 0) };
         panel.Children.Add(Ui.Text(label, 10, Ui.Muted));
-        panel.Children.Add(new Viewbox { Child = Ui.Text(value, 23, color, FontWeights.SemiBold), Height = 34,
+        var valueRow = new StackPanel { Orientation = Orientation.Horizontal };
+        valueRow.Children.Add(Ui.Text(value, 23, color, FontWeights.SemiBold));
+        if (quota is { } indicator)
+        {
+            var status = indicator.StatusLabel(indicator.Status);
+            status.Margin = new Thickness(8, 0, 0, 0);
+            valueRow.Children.Add(status);
+        }
+        panel.Children.Add(new Viewbox { Child = valueRow, Height = 34,
             Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, HorizontalAlignment = HorizontalAlignment.Left });
         parent.Children.Add(panel);
     }

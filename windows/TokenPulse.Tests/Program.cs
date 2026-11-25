@@ -41,6 +41,17 @@ await Test("Codex Swift fixture: cumulative deltas, reasoning and quota", () => 
     Equal("team", result.RateLimit.PlanType!); Equal(300, result.RateLimit.Primary.WindowMinutes!.Value);
     Equal(1792319147L, result.RateLimit.Primary.ResetsAt!.Value.ToUnixTimeSeconds());
 }));
+await Test("Codex quota distinguishes missing usage from a reported zero", () => Sync(() =>
+{
+    var log = """{"payload":{"type":"token_count","rate_limits":{"primary":{},"secondary":{"used_percent":0}}}}""";
+    var quota = Parse(Providers.Codex, log).RateLimit!;
+    Check(!quota.Primary.UsageReported, "missing usage must remain unknown");
+    Check(quota.Secondary!.UsageReported, "an explicit zero must be treated as an observation");
+    Near(0, quota.Secondary.UsedPercent);
+    using var json = JsonDocument.Parse(JsonSerializer.Serialize(quota.Primary));
+    Equal(0d, json.RootElement.GetProperty("UsedPercent").GetDouble());
+    Check(!json.RootElement.TryGetProperty("UsageReported", out _), "the provenance flag must not change the JSON contract");
+}));
 await Test("Codex duplicate and decreasing cumulative counters do not add usage", () => Sync(() =>
 {
     var fixture = Fixture("codex");

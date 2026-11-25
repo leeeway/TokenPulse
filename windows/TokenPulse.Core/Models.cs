@@ -37,6 +37,9 @@ public sealed record UsageEvent(string Id, string Provider, string Model, DateTi
 
 public sealed record QuotaWindow(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt)
 {
+    // Distinguish an observed zero from the existing serialized fallback for missing usage.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool UsageReported { get; init; } = true;
     public bool IsExpired(DateTimeOffset now) => ResetsAt is { } reset && reset <= now;
 }
 public sealed record RateLimit(string Provider, string? PlanType, QuotaWindow Primary,

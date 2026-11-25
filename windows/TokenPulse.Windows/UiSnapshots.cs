@@ -57,6 +57,7 @@ internal static class UiSnapshots
             var calm = scan with { Events = events.Select(e => e == today ? e with { Timestamp = now.AddHours(-1) } : e).ToArray() };
             window.Render(Aggregation.Build(calm, TimeWindow.Today, now), calm, models);
             await ShowAndCapture(window, directory, "dashboard-normal");
+            VerifyQuotaStatus(window, "剩余 71% · 充足", Ui.Green);
             var empty = new ScanResult([], [], sources.Select(s => s with { State = SourceState.Missing, Message = "未发现日志" }).ToArray());
             window.Render(Aggregation.Build(empty, TimeWindow.Today, now), empty, models);
             await ShowAndCapture(window, directory, "dashboard-empty");
@@ -75,6 +76,7 @@ internal static class UiSnapshots
                 sources.Select(s => s.Provider == Providers.Claude ? s with { State = SourceState.Error, Path = @"C:\Users\示例用户\开发工作区\自定义会话与日志\Claude Code\projects", Message = "访问失败：需要检查目录权限" } : s).ToArray());
             window.Width = 420; window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, new([new("qwen-local", 8_000_000_000, 6_000_000_000)], "Ollama 已连接"));
             await ShowAndCapture(window, directory, "dashboard-narrow-multiple");
+            VerifyQuotaStatus(window, $"剩余 {4.8:0.#}% · 余量偏低", Ui.Brush("#CB3746"));
             if (!Descendants<TextBlock>(window).Any(t => t.Text == "重置 " + now.AddHours(2).LocalDateTime.ToString("MM/dd HH:mm")))
                 throw new InvalidOperationException("Quota reset time is hidden from the card.");
             var modelToggle = Descendants<Button>(window).Single(b => Equals(b.Content, "最近 2 个模型  +"));
@@ -89,14 +91,28 @@ internal static class UiSnapshots
             var expired = mixed with { RateLimits = [quota with { Primary = new(95, 300, now.AddSeconds(-1)), Secondary = new(29, 10080, now.AddDays(2)) }] };
             window.Render(Aggregation.Build(expired, TimeWindow.Today, now), expired, models);
             await ShowAndCapture(window, directory, "dashboard-expired-quota");
-            if (!Descendants<TextBlock>(window).Any(t => t.Text == "已到重置时间 · 待更新")
-                || Descendants<TextBlock>(window).Any(t => t.Text == "已用 95.0%"))
-                throw new InvalidOperationException("Expired quota is presented as current.");
+            VerifyQuotaStatus(window, "待更新", Ui.Muted);
+            if (Descendants<Border>(window).Count(b => b.Name == "QuotaRemainingFill") != 1)
+                throw new InvalidOperationException("Expired quota has a filled progress bar.");
             // Expiry must update even when the underlying log has not changed.
             window.Render(Aggregation.Build(mixed, TimeWindow.Today, now), mixed, models);
             window.Render(Aggregation.Build(mixed, TimeWindow.Today, now.AddHours(3)), mixed, models);
-            if (!Descendants<TextBlock>(window).Any(t => t.Text == "已到重置时间 · 待更新"))
-                throw new InvalidOperationException("Unchanged quota did not expire as time advanced.");
+            VerifyQuotaStatus(window, "待更新", Ui.Muted);
+
+            var boundaries = mixed with { RateLimits = [quota with { Primary = new(50, 300, now.AddHours(2)), Secondary = new(80, 10080, now.AddDays(2)) }] };
+            window.Render(Aggregation.Build(boundaries, TimeWindow.Today, now), boundaries, models);
+            await ShowAndCapture(window, directory, "dashboard-quota-thresholds");
+            VerifyQuotaStatus(window, "剩余 50% · 需留意", Ui.Brush("#C87016"));
+            VerifyQuotaStatus(window, "剩余 20% · 余量偏低", Ui.Brush("#CB3746"));
+
+            var noCapacity = mixed with { RateLimits = [quota with { Primary = new(100, 300, now.AddHours(2)),
+                Secondary = new(0, 10080, now.AddDays(2)) { UsageReported = false } }] };
+            window.Render(Aggregation.Build(noCapacity, TimeWindow.Today, now), noCapacity, models);
+            await ShowAndCapture(window, directory, "dashboard-quota-exhausted-unknown");
+            VerifyQuotaStatus(window, "剩余 0% · 已用尽", Ui.Brush("#CB3746"));
+            VerifyQuotaStatus(window, "余量未知", Ui.Muted);
+            if (Descendants<Border>(window).Any(b => b.Name == "QuotaRemainingFill"))
+                throw new InvalidOperationException("Exhausted or unknown quota has a filled progress bar.");
             var export = Descendants<Button>(window).Single(b => Equals(b.ToolTip, "导出当前周期的模型用量 CSV"));
             if (!export.IsEnabled) throw new InvalidOperationException("Rendered summary cannot be exported.");
             radio.IsChecked = true;
@@ -246,16 +262,19 @@ internal static class UiSnapshots
             {
                 await ShowAndCapture(window, directory, "quota-ledger-current");
                 if (!window.ShowInTaskbar || !Descendants<TextBlock>(window).Any(t => t.Text == "16.8K")
-                    || !Descendants<TextBlock>(window).Any(t => t.Text == "100%")
+                    || !Descendants<TextBlock>(window).Any(t => t.Text == "0%")
                     || !Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("首次观测 100%")))
                     throw new InvalidOperationException("Native ledger totals or quota observations are not displayed correctly.");
+                VerifyQuotaStatus(window, "已用尽", Ui.Brush("#CB3746"));
                 window.Width = 520; await ShowAndCapture(window, directory, "quota-ledger-narrow");
                 CaptureViewport(window, directory, "quota-ledger-wide-1920", new Size(1920, 1080));
                 window.Width = 880;
                 Descendants<RadioButton>(window).Single(r => Equals(r.Content, "历史账本")).IsChecked = true;
                 var cycles = Descendants<ComboBox>(window).Single(); cycles.SelectedIndex = 1;
                 await ShowAndCapture(window, directory, "quota-ledger-history");
-                if (!Descendants<TextBlock>(window).Any(t => t.Text == "历史归档快照"))
+                if (!Descendants<TextBlock>(window).Any(t => t.Text == "历史归档快照")
+                    || !Descendants<TextBlock>(window).Any(t => t.Text == "末次观测周配额 · 已用")
+                    || Descendants<Border>(window).Any(b => b.Name == "QuotaStatusDot"))
                     throw new InvalidOperationException("Archived ledger cycle could not be selected.");
                 Descendants<RadioButton>(window).Single(r => Equals(r.Content, "自定义")).IsChecked = true;
                 var from = Descendants<TextBox>(window).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "开始本地时间");
@@ -285,6 +304,7 @@ internal static class UiSnapshots
             try
             {
                 await ShowAndCapture(emptyWindow, directory, "quota-ledger-empty");
+                VerifyQuotaStatus(emptyWindow, "余量未知", Ui.Muted);
                 if (Descendants<TextBlock>(emptyWindow).Any(t => t.Text == "0%")
                     || !Descendants<TextBlock>(emptyWindow).Any(t => t.Text == "当前周配额尚无可靠记录"))
                     throw new InvalidOperationException("Missing weekly quota was presented as zero percent.");
@@ -307,6 +327,15 @@ internal static class UiSnapshots
         }
         finally { Directory.Delete(temporary, recursive: true); }
     }
+    private static void VerifyQuotaStatus(Window window, string text, SolidColorBrush expected)
+    {
+        var status = Descendants<TextBlock>(window).Single(t => t.Text == text);
+        if (status.Parent is not StackPanel label
+            || label.Children.OfType<Border>().SingleOrDefault(b => b.Name == "QuotaStatusDot")?.Background is not SolidColorBrush color
+            || color.Color != expected.Color)
+            throw new InvalidOperationException($"Quota status '{text}' is missing its expected color.");
+    }
+
     private static async Task ShowAndCapture(Window window, string directory, string name)
     {
         if (!window.IsVisible) window.Show();

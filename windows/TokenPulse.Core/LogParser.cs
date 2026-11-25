@@ -79,9 +79,14 @@ public static class LogParser
                         var secondary = Field(limits, "secondary");
                         int? Minutes(JsonElement value, int? defaultValue) => Field(value, "window_minutes").ValueKind == JsonValueKind.Number
                             && Field(value, "window_minutes").TryGetInt32(out var minutes) ? minutes : defaultValue;
+                        QuotaWindow Window(JsonElement value, int? defaultMinutes)
+                        {
+                            var used = Real(value, "used_percent");
+                            return new(used ?? 0, Minutes(value, defaultMinutes), Epoch(value)) { UsageReported = used.HasValue };
+                        }
                         var limit = new RateLimit(provider, Text(limits, "plan_type"),
-                            new(Real(primary, "used_percent") ?? 0, Minutes(primary, 300), Epoch(primary)),
-                            secondary.ValueKind == JsonValueKind.Object ? new(Real(secondary, "used_percent") ?? 0, Minutes(secondary, null), Epoch(secondary)) : null,
+                            Window(primary, 300),
+                            secondary.ValueKind == JsonValueKind.Object ? Window(secondary, null) : null,
                             timestamp);
                         if (latest is null || timestamp >= latest.UpdatedAt) latest = limit;
                     }
