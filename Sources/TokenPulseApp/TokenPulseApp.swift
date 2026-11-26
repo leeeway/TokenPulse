@@ -15,12 +15,23 @@ struct TokenPulseMainApp: App {
             DashboardPopoverView(viewModel: viewModel)
                 .frame(width: 430)
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: viewModel.lowestQuota?.isLow == true ? "exclamationmark.circle.fill"
-                      : viewModel.snapshot.isHighBurnRate ? "flame.fill" : "bolt.fill")
-                if !viewModel.menuBarText.isEmpty {
-                    Text(viewModel.menuBarText)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+            let compact = viewModel.displayMode == .quotaOnly
+            let text = viewModel.menuBarText
+            let highBurnRate = viewModel.snapshot.isHighBurnRate
+            HStack(spacing: compact ? 2 : 4) {
+                if viewModel.lowestQuota?.isLow == true {
+                    if let image = QuotaIndicator.menuBarWarningImage {
+                        Image(nsImage: image).renderingMode(.original)
+                    } else {
+                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                    }
+                } else if highBurnRate || !compact || text.isEmpty {
+                    Image(systemName: highBurnRate ? "flame.fill" : "bolt.fill")
+                }
+                if !text.isEmpty {
+                    Text(text)
+                        .font(.system(size: 12, weight: .medium, design: compact ? .default : .monospaced))
+                        .monospacedDigit()
                 }
             }
             .help(["TokenPulse · \(viewModel.selectedWindow.title) · \(TokenFormatters.compactTokens(viewModel.snapshot.grandTotalTokens)) Token · \(TokenFormatters.usd(viewModel.snapshot.totalCostUSD))",
