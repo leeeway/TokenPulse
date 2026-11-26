@@ -113,7 +113,8 @@ public final class CodexLedgerStore: @unchecked Sendable {
         let history = envelope.reports.filter { $0.endAt <= now && $0.endAt > now.addingTimeInterval(-90 * 86400) }
             .sorted { $0.endAt > $1.endAt }
         lastState = LedgerViewState(current: current, history: history,
-            warning: warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: "\n"), sourceAvailable: input.sourceAvailable)
+            warning: warnings.isEmpty ? nil : Array(Set(warnings)).sorted().joined(separator: "\n"),
+            sourceAvailable: input.sourceAvailable, observedResetCounts: CodexLedgerEngine.observedResetCounts(input: input, now: now))
         return lastState
     }
 

@@ -1,8 +1,18 @@
+import AppKit
 import SwiftUI
 import TokenPulseCore
 
 enum QuotaIndicator: Equatable {
     case ample(Double), watch(Double), low(Double), exhausted, awaitingUpdate, unknown
+
+    @MainActor static let menuBarWarningImage: NSImage? = {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+            .applying(.init(paletteColors: [.systemRed]))
+        let image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
+        image?.isTemplate = false
+        return image
+    }()
 
     init(usedPercent: Double?, expired: Bool) {
         if expired { self = .awaitingUpdate; return }
@@ -27,6 +37,7 @@ enum QuotaIndicator: Equatable {
     var percentText: String? {
         remainingPercent.map { value in
             if value > 0 && value < 0.1 { return "<0.1%" }
+            if value > 20 && value <= 20.05 { return ">20%" }
             return (value / 100).formatted(.percent.precision(.fractionLength(0...1)))
         }
     }

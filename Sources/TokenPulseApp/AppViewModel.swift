@@ -5,6 +5,7 @@ import TokenPulseCore
 import UserNotifications
 
 public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
+    case quotaOnly = "quota_only"
     case iconOnly = "icon_only"
     case tokensAndCost = "tokens_cost"
     case upDownStream = "up_down"
@@ -14,7 +15,8 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
 
     public var label: String {
         switch self {
-        case .iconOnly: return "仅图标（适合刘海屏）"
+        case .quotaOnly: return "最低剩余配额（紧凑）"
+        case .iconOnly: return "仅图标（最省空间）"
         case .tokensAndCost: return "总 Token + 价值"
         case .upDownStream: return "上下行 Token"
         case .costOnly: return "仅显示 API 价值"
@@ -115,7 +117,7 @@ public final class AppViewModel: ObservableObject {
         self.eventMinimumInterval = eventMinimumInterval
         let window = defaults.string(forKey: "selectedWindow").flatMap(TimeWindow.init(rawValue:)) ?? .today
         selectedWindow = window
-        displayMode = defaults.string(forKey: "displayMode").flatMap(MenuBarDisplayMode.init(rawValue:)) ?? .iconOnly
+        displayMode = defaults.string(forKey: "displayMode").flatMap(MenuBarDisplayMode.init(rawValue:)) ?? .quotaOnly
         snapshot = UsageCollector.buildSnapshot(allEvents: [], rateLimits: [:], runningLocalModels: [], window: window, now: clock())
         if startsAutomatically {
             driver = BackgroundRefreshDriver(directories: collector.logWatchDirectories, refresh: { [weak self] trigger in
@@ -173,6 +175,9 @@ public final class AppViewModel: ObservableObject {
     public var menuBarText: String {
         let s = snapshot
         switch displayMode {
+        case .quotaOnly:
+            guard let lowestQuota else { return "" }
+            return QuotaIndicator(usedPercent: lowestQuota.usedPercent, expired: false).percentText ?? ""
         case .iconOnly:
             return ""
         case .tokensAndCost:

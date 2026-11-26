@@ -57,7 +57,10 @@ struct LedgerView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     if let warning = model.state.warning { notice(warning, symbol: "exclamationmark.triangle") }
                     if let message = model.message { notice(message, symbol: "info.circle") }
-                    if page == .history { historyPicker }
+                    if page == .history {
+                        resetSummary
+                        historyPicker
+                    }
                     if page == .custom { rangePicker }
                     if let report { LedgerReportView(report: report) }
                     else if model.isLoading { ProgressView("正在读取原生日志…").frame(maxWidth: .infinity, minHeight: 240) }
@@ -102,6 +105,27 @@ struct LedgerView: View {
             Spacer()
             Text("\(model.state.history.count) 个周期").foregroundStyle(.secondary)
         }
+    }
+
+    private var resetSummary: some View {
+        HStack {
+            Text("近 30 天观测到的重置").font(.headline)
+            Spacer()
+            if let counts = model.state.observedResetCounts {
+                Text("5 小时 \(resetCountText(counts.fiveHour)) · 周配额 \(resetCountText(counts.weekly))")
+                    .monospacedDigit()
+            } else {
+                Text(model.isLoading ? "正在读取…" : "日志不可用").foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+        .card()
+        .help("只统计本机 Codex 日志确认的周期切换。日志缺失期间可能漏计。")
+        .accessibilityElement(children: .combine)
+    }
+
+    private func resetCountText(_ count: Int?) -> String {
+        count.map { "\($0.formatted()) 次" } ?? "暂无记录"
     }
 
     private var rangePicker: some View {

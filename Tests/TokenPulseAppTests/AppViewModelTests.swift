@@ -315,17 +315,45 @@ struct AppViewModelTests {
         defaults.set("invalid", forKey: "displayMode")
         let fallback = AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false)
         #expect(fallback.selectedWindow == .today)
-        #expect(fallback.displayMode == .iconOnly)
+        #expect(fallback.displayMode == .quotaOnly)
     }
 
     @Test @MainActor
-    func compactMenuBarUsesOnlyAnIconAndKeepsTextModesAvailable() throws {
+    func compactMenuBarShowsLowestActiveQuotaAndKeepsOtherModesAvailable() async throws {
         let suite = "TokenPulse.Tests." + UUID().uuidString
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let model = AppViewModel(collector: ControlledCollector(), defaults: defaults, startsAutomatically: false)
-        #expect(model.displayMode == .iconOnly)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let collector = ControlledCollector()
+        let clock = QuotaTestClock(collector.now)
+        let model = AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false,
+                                 clock: { clock.now }, ledgerDirectory: directory)
+        #expect(model.displayMode == .quotaOnly)
         #expect(model.menuBarText.isEmpty)
+        let now = clock.now
+        let shortReset = now.addingTimeInterval(60)
+        let weeklyReset = now.addingTimeInterval(120)
+        collector.setLedgerInput(CodexLedgerInput(observations: [
+            QuotaObservation(observedAt: now, windowRole: "primary", windowMinutes: 300,
+                             resetsAt: shortReset, usedPercent: 80),
+            QuotaObservation(observedAt: now, windowRole: "secondary", windowMinutes: 10080,
+                             resetsAt: weeklyReset, usedPercent: 55)
+        ], scannedAt: now, sourceAvailable: true))
+        model.refreshAutomatically()
+        try await eventually { model.codexQuotas.count == 2 && !model.isRefreshing }
+        #expect(model.menuBarText == QuotaIndicator(usedPercent: 80, expired: false).percentText)
+        #expect(model.lowestQuota?.isLow == true)
+        clock.set(shortReset)
+        model.quotaDeadlineReached(at: shortReset)
+        #expect(model.menuBarText == QuotaIndicator(usedPercent: 55, expired: false).percentText)
+        #expect(model.lowestQuota?.isLow == false)
+        try await eventually { !model.isRefreshing }
+        clock.set(weeklyReset)
+        model.quotaDeadlineReached(at: weeklyReset)
+        #expect(model.menuBarText.isEmpty)
+        #expect(model.quotaHelp == "Codex 配额待更新")
+        try await eventually { !model.isRefreshing }
         model.displayMode = .tokensAndCost
         #expect(!model.menuBarText.isEmpty)
         model.displayMode = .iconOnly
