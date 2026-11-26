@@ -160,7 +160,45 @@ public enum LedgerReportError: Error, LocalizedError {
     }
 }
 
+public struct QuotaResetCounts: Sendable, Equatable {
+    /// A missing count means no valid observations for that window.
+    public let fiveHour: Int?
+    public let weekly: Int?
+}
+
 public enum CodexLedgerEngine {
+    public static func observedResetCounts(input: CodexLedgerInput, now: Date) -> QuotaResetCounts? {
+        guard input.sourceAvailable else { return nil }
+        let cutoff = now.addingTimeInterval(-30 * 86400)
+        var fiveHourEnds = Set<Date>()
+        var weeklyEnds = Set<Date>()
+        for observation in input.observations where observation.resetsAt >= cutoff && observation.observedAt <= now {
+            switch observation.windowMinutes {
+            case 300 where observation.isValid: fiveHourEnds.insert(observation.resetsAt)
+            case 10080 where observation.isValid: weeklyEnds.insert(observation.resetsAt)
+            default: break
+            }
+        }
+        return QuotaResetCounts(fiveHour: confirmedResetCount(fiveHourEnds, windowMinutes: 300),
+                                weekly: confirmedResetCount(weeklyEnds, windowMinutes: 10080))
+    }
+
+    private static func confirmedResetCount(_ ends: Set<Date>, windowMinutes: Int) -> Int? {
+        let duration = Double(windowMinutes) * 60
+        var previousEnd: Date?
+        var count = 0
+        for end in ends.sorted() {
+            if let previousEnd {
+                // A later, non-overlapping window confirms one transition. A gap
+                // between observed windows gives no evidence for intervening cycles.
+                guard end.timeIntervalSince(previousEnd) >= duration else { continue }
+                count += 1
+            }
+            previousEnd = end
+        }
+        return previousEnd == nil ? nil : count
+    }
+
     public static func currentReport(input: CodexLedgerInput, now: Date = Date(), timeZone: TimeZone = .current) -> UsageReportSnapshot? {
         let groups = weeklyGroups(input: input, now: now)
         guard let latest = currentObservation(input: input, now: now),
@@ -261,7 +299,10 @@ public struct LedgerViewState: Sendable {
     public var history: [UsageReportSnapshot]
     public var warning: String?
     public var sourceAvailable: Bool
-    public init(current: UsageReportSnapshot? = nil, history: [UsageReportSnapshot] = [], warning: String? = nil, sourceAvailable: Bool = false) {
+    public var observedResetCounts: QuotaResetCounts?
+    public init(current: UsageReportSnapshot? = nil, history: [UsageReportSnapshot] = [], warning: String? = nil,
+                sourceAvailable: Bool = false, observedResetCounts: QuotaResetCounts? = nil) {
         self.current = current; self.history = history; self.warning = warning; self.sourceAvailable = sourceAvailable
+        self.observedResetCounts = observedResetCounts
     }
 }

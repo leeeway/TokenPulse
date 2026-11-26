@@ -77,6 +77,56 @@ internal static class QuotaLedgerTests
             Check(session.View(after) is { AwaitingResetUpdate: false, Current.Quota.UsedPercent: 5 });
         });
 
+        Test("observed reset counts separate durations and ignore duplicates, overlaps, and gaps", () =>
+        {
+            using var directory = new LedgerDirectory();
+            var cutoff = now.AddDays(-30);
+            var firstWeeklyEnd = now.AddDays(-8);
+            QuotaObservation Short(DateTimeOffset reset, DateTimeOffset? recorded = null, string role = "primary", double used = 45) =>
+                new(recorded ?? reset.AddMinutes(-1), role, 300, reset, used, null);
+            QuotaObservation[] observations = [
+                Short(now.AddHours(4), now), Short(cutoff.ToOffset(TimeSpan.FromHours(8)), role: "secondary"),
+                Short(cutoff.AddMinutes(1)), Short(cutoff), Short(cutoff.AddHours(5)),
+                Short(cutoff.AddSeconds(-1)), Short(now.AddHours(9)), Short(now.AddDays(-1), used: double.NaN),
+                new(firstWeeklyEnd.AddSeconds(-1), "primary", 10080, firstWeeklyEnd, 100, "team"),
+                new(now, "secondary", 10080, firstWeeklyEnd.AddDays(14), 100, "team")
+            ];
+            var scan = Scan([], observations);
+            var session = new QuotaLedgerSession(new QuotaLedgerStore(directory.File));
+            session.Update(scan, true, now);
+            var expected = new QuotaResetCounts(2, 1);
+            Check(session.View().ObservedResetCounts == expected);
+            session.ClearEndedHistory();
+            Check(session.View().ObservedResetCounts == expected);
+            session.Update(scan, true, now);
+            Check(session.View().ObservedResetCounts == expected);
+            var generation = session.Generation;
+            session.Suspend(false);
+            session.Update(scan, true, now, expectedGeneration: generation);
+            Check(session.View().ObservedResetCounts is null);
+            session.Update(Scan([], observations, SourceState.Error), true, now);
+            Check(session.View().ObservedResetCounts is null);
+        });
+        Test("observed reset counts require a successor and age out after thirty days", () =>
+        {
+            using var directory = new LedgerDirectory();
+            var old = new QuotaObservation(end.AddSeconds(-1), "primary", 10080, end, 100, null);
+            var next = new QuotaObservation(end, "secondary", 10080, end.AddDays(7), 1, null);
+            var scan = Scan([], [next, old]);
+            var session = new QuotaLedgerSession(new QuotaLedgerStore(directory.File));
+            session.Update(scan, true, end.AddSeconds(-1));
+            Check(session.View().ObservedResetCounts == new QuotaResetCounts(null, 0));
+            session.Update(Scan([], [old]), true, end);
+            Check(session.View().ObservedResetCounts == new QuotaResetCounts(null, 0));
+            session.Update(scan, true, end);
+            Check(session.View().ObservedResetCounts == new QuotaResetCounts(null, 1));
+            session.Update(scan, true, end.AddDays(30));
+            Check(session.View().ObservedResetCounts == new QuotaResetCounts(null, 1));
+            session.Update(scan, true, end.AddDays(30).AddSeconds(1));
+            Check(session.View().ObservedResetCounts == new QuotaResetCounts(null, 0));
+            session.Update(scan, true, next.ResetsAtUtc.AddDays(30).AddSeconds(1));
+            Check(session.View().ObservedResetCounts == new QuotaResetCounts(null, null));
+        });
         Test("low quota alerts deduplicate across restarts and distinguish window cycles", () =>
         {
             var low = new QuotaObservation(now, "primary", 300, now.AddHours(1), 80, null);

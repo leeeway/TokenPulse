@@ -212,6 +212,51 @@ struct CodexLedgerTests {
         #expect(reports.contains { $0.warnings.contains(where: { $0.contains("多个套餐") }) })
     }
 
+    @Test func observedResetCountsSeparateDurationsAndIgnoreDuplicatesOverlapsAndGaps() throws {
+        let cutoff = reportNow.addingTimeInterval(-30 * 86400)
+        let nextShortEnd = cutoff.addingTimeInterval(5 * 3600)
+        let nextObservedShortEnd = reportNow.addingTimeInterval(4 * 3600)
+        let firstWeeklyEnd = reportNow.addingTimeInterval(-8 * 86400)
+        func short(_ end: Date, observed: Date? = nil, role: String = "primary", used: Double = 45) -> QuotaObservation {
+            QuotaObservation(observedAt: observed ?? end.addingTimeInterval(-60), windowRole: role,
+                             windowMinutes: 300, resetsAt: end, usedPercent: used)
+        }
+        let observations = [
+            short(nextObservedShortEnd, observed: reportNow), short(cutoff, role: "secondary"),
+            short(cutoff.addingTimeInterval(60)), short(cutoff), short(nextShortEnd),
+            short(cutoff.addingTimeInterval(-1)), short(reportNow.addingTimeInterval(9 * 3600)),
+            short(reportNow.addingTimeInterval(-86400), used: .nan),
+            quota(at: firstWeeklyEnd.addingTimeInterval(-1), end: firstWeeklyEnd, role: "primary"),
+            quota(at: reportNow, end: firstWeeklyEnd.addingTimeInterval(14 * 86400))
+        ]
+        let input = CodexLedgerInput(observations: observations, sourceAvailable: true)
+        let storeDirectory = try LedgerTestDirectory()
+        defer { storeDirectory.remove() }
+        let store = CodexLedgerStore(directory: storeDirectory.url)
+        let counts = try #require(store.update(input: input, now: reportNow).observedResetCounts)
+        #expect(counts.fiveHour == 2)
+        #expect(counts.weekly == 1)
+        #expect(store.clearHistory(now: reportNow).observedResetCounts == counts)
+        #expect(store.update(input: .empty(), now: reportNow).observedResetCounts == nil)
+    }
+
+    @Test func observedResetCountsWaitForNextReadingAndAgeOutAtThirtyDays() throws {
+        let old = quota(at: cycleEnd.addingTimeInterval(-1), end: cycleEnd)
+        let next = quota(at: cycleEnd, end: cycleEnd.addingTimeInterval(7 * 86400), percent: 1)
+        let input = CodexLedgerInput(observations: [next, old], sourceAvailable: true)
+        let before = try #require(CodexLedgerEngine.observedResetCounts(input: input, now: cycleEnd.addingTimeInterval(-1)))
+        #expect(before.fiveHour == nil)
+        #expect(before.weekly == 0)
+        let awaiting = CodexLedgerInput(observations: [old], sourceAvailable: true)
+        #expect(CodexLedgerEngine.observedResetCounts(input: awaiting, now: cycleEnd)?.weekly == 0)
+        #expect(CodexLedgerEngine.observedResetCounts(input: input, now: cycleEnd)?.weekly == 1)
+
+        let thirtyDaysLater = cycleEnd.addingTimeInterval(30 * 86400)
+        #expect(CodexLedgerEngine.observedResetCounts(input: input, now: thirtyDaysLater)?.weekly == 1)
+        #expect(CodexLedgerEngine.observedResetCounts(input: input, now: thirtyDaysLater.addingTimeInterval(1))?.weekly == 0)
+        #expect(CodexLedgerEngine.observedResetCounts(input: input, now: next.resetsAt.addingTimeInterval(30 * 86400 + 1))?.weekly == nil)
+    }
+
     @Test func customRangeIsHalfOpenAndUsesFrozenLocalDayAcrossDST() throws {
         let zone = try #require(TimeZone(identifier: "America/New_York"))
         let start = instant("2026-11-01T05:00:00Z")

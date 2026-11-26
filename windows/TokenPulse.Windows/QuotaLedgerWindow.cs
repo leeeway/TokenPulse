@@ -12,6 +12,7 @@ internal sealed class QuotaLedgerWindow : Window
     private readonly TextBlock operation = Ui.Text("", 10.5, Ui.Muted);
     private readonly StackPanel reportBody = new();
     private readonly StackPanel historyPanel = new();
+    private readonly TextBlock resetCounts = Ui.Text("", 11);
     private readonly StackPanel customPanel = new();
     private readonly ComboBox history = new() { MinHeight = 34, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox customStart = new() { MinWidth = 140 };
@@ -50,6 +51,12 @@ internal sealed class QuotaLedgerWindow : Window
         top.Children.Add(new Border { Child = tabs, CornerRadius = new CornerRadius(9), Background = Ui.Brush("#EEEFF6"),
             Padding = new Thickness(2), Margin = new Thickness(0, 16, 0, 12) });
         status.Margin = new Thickness(2, 0, 2, 12); top.Children.Add(status);
+        var resetSummary = Ui.Columns(new(1, GridUnitType.Star), new(12), GridLength.Auto);
+        Ui.Put(resetSummary, Ui.Text("近 30 天观测到的重置", 11, Ui.Ink, FontWeights.SemiBold), 0);
+        Ui.Put(resetSummary, resetCounts, 2);
+        var resetCard = Ui.Card(resetSummary, new Thickness(12, 9, 12, 9));
+        resetCard.ToolTip = "只统计本机 Codex 日志确认的周期切换。日志缺失期间可能漏计。";
+        historyPanel.Children.Add(resetCard); Ui.Gap(historyPanel, 8);
         historyPanel.Children.Add(Ui.Text("选择账本周期", 10.5, Ui.Muted)); Ui.Gap(historyPanel, 6);
         history.DisplayMemberPath = nameof(CycleChoice.Label);
         AutomationProperties.SetName(history, "选择账本周期");
@@ -122,6 +129,9 @@ internal sealed class QuotaLedgerWindow : Window
             finally { changingHistory = false; }
         }
         historyPanel.Visibility = mode == "history" ? Visibility.Visible : Visibility.Collapsed;
+        resetCounts.Text = view.ObservedResetCounts is { } counts
+            ? $"5 小时 {ResetCountText(counts.FiveHour)} · 周配额 {ResetCountText(counts.Weekly)}"
+            : "日志不可用";
         customPanel.Visibility = mode == "custom" ? Visibility.Visible : Visibility.Collapsed;
         if (!view.NativeSourceAvailable) customReport = null;
         var chosen = cycles.FirstOrDefault(c => c.Key == selectedCycle);
@@ -131,6 +141,8 @@ internal sealed class QuotaLedgerWindow : Window
         else RenderEmpty(view);
         UpdateButtons();
     }
+
+    private static string ResetCountText(int? count) => count is { } value ? $"{value:N0} 次" : "暂无记录";
 
     private void UpdateButtons()
     {

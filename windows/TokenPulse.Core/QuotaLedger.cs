@@ -77,6 +77,50 @@ public sealed record QuotaLedgerView(IReadOnlyList<QuotaCycle> Cycles, QuotaRepo
     string Status, bool StoreCorrupt, DateTimeOffset? ClearedEndedBeforeUtc)
 {
     public bool AwaitingResetUpdate { get; init; }
+    public QuotaResetCounts? ObservedResetCounts { get; init; }
+}
+
+public sealed record QuotaResetCounts(int? FiveHour, int? Weekly)
+{
+    internal static QuotaResetCounts From(IReadOnlyList<QuotaObservation> observations, DateTimeOffset now)
+    {
+        var cutoff = now.AddDays(-30);
+        var fiveHourEnds = new HashSet<DateTimeOffset>();
+        var weeklyEnds = new HashSet<DateTimeOffset>();
+        foreach (var observation in observations)
+        {
+            if (observation.ResetsAtUtc < cutoff || observation.RecordedAtUtc > now) continue;
+            switch (observation.WindowMinutes)
+            {
+                case 300 when observation.IsValid:
+                    fiveHourEnds.Add(observation.ResetsAtUtc);
+                    break;
+                case 10080 when observation.IsValid:
+                    weeklyEnds.Add(observation.ResetsAtUtc);
+                    break;
+            }
+        }
+        return new(ConfirmedResetCount(fiveHourEnds, TimeSpan.FromHours(5)),
+            ConfirmedResetCount(weeklyEnds, TimeSpan.FromDays(7)));
+    }
+
+    private static int? ConfirmedResetCount(HashSet<DateTimeOffset> ends, TimeSpan duration)
+    {
+        DateTimeOffset? previousEnd = null;
+        var count = 0;
+        foreach (var end in ends.Order())
+        {
+            if (previousEnd is { } previous)
+            {
+                // A later, non-overlapping window confirms one transition.
+                // Any intervening cycles without observations are unknown.
+                if (end - previous < duration) continue;
+                count++;
+            }
+            previousEnd = end;
+        }
+        return previousEnd is null ? null : count;
+    }
 }
 
 /// <summary>Native-only UTC aggregation. Reports are immutable snapshots and never contain raw identifiers.</summary>
@@ -182,13 +226,22 @@ public sealed class QuotaLedgerSession
     private DateTimeOffset lastSnapshot;
     private QuotaReport? currentReport;
     private QuotaObservation? latestWeekly;
+    private QuotaResetCounts? observedResetCounts;
     private string? warning;
     private bool corrupt;
     private long generation;
     public long Generation { get { lock (gate) return generation; } }
     public void Suspend(bool sourceEnabled)
     {
-        lock (gate) { generation++; enabled = sourceEnabled; lastScan = null; currentReport = null; latestWeekly = null; }
+        lock (gate)
+        {
+            generation++;
+            enabled = sourceEnabled;
+            lastScan = null;
+            currentReport = null;
+            latestWeekly = null;
+            observedResetCounts = null;
+        }
     }
     public QuotaLedgerSession(QuotaLedgerStore? storage = null)
     {
@@ -202,11 +255,13 @@ public sealed class QuotaLedgerSession
         {
             if (expectedGeneration is { } expected && expected != generation) return;
             lastScan = scan; enabled = sourceEnabled; lastSnapshot = snapshot.ToUniversalTime();
-            latestWeekly = SourceAvailable ? scan.LatestQuotas(lastSnapshot).FirstOrDefault(o => o.IsWeekly) : null;
+            var sourceAvailable = SourceAvailable;
+            latestWeekly = sourceAvailable ? scan.LatestQuotas(lastSnapshot).FirstOrDefault(o => o.IsWeekly) : null;
+            observedResetCounts = sourceAvailable ? QuotaResetCounts.From(scan.QuotaObservations, lastSnapshot) : null;
             currentReport = latestWeekly is { } weekly && !weekly.IsExpired(lastSnapshot) ? Current(scan, lastSnapshot, weekly) : null;
             var retained = (rebuild ? Array.Empty<QuotaCycle>() : document.Cycles)
                 .Where(c => c.Report.EndUtc > lastSnapshot.AddDays(-90)).ToDictionary(c => c.Key, StringComparer.Ordinal);
-            if (SourceAvailable)
+            if (sourceAvailable)
             {
                 var groups = scan.QuotaObservations.Where(o => o.IsWeekly && o.IsValid && o.RecordedAtUtc <= lastSnapshot)
                     .GroupBy(o => o.Key).OrderBy(g => g.Key, StringComparer.Ordinal);
@@ -250,7 +305,7 @@ public sealed class QuotaLedgerSession
                 : waiting ? "周配额已到重置时间，等待新周期日志。"
                 : current is null ? "日志未提供可确认的当前周配额周期；不会推算新周期或归零。" : "仅本机原生 Codex 日志；账本保留最近 90 天。");
             return new(document.Cycles, current, SourceAvailable, status, corrupt, document.ClearedEndedBeforeUtc)
-                { AwaitingResetUpdate = waiting };
+                { AwaitingResetUpdate = waiting, ObservedResetCounts = observedResetCounts };
         }
     }
     private static QuotaReport Current(ScanResult scan, DateTimeOffset snapshot, QuotaObservation observation)

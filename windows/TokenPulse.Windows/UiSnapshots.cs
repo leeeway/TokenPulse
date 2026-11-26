@@ -272,7 +272,9 @@ internal static class UiSnapshots
                 NativeCodexEvents = [first, second, old],
                 QuotaObservations = [new(start.AddHours(1), "secondary", 10080, end, 70, "team"),
                     new(now.AddHours(-2), "primary", 10080, end, 100, "team"),
-                    new(start.AddHours(-1), "secondary", 10080, start, 95, "team")]
+                    new(start.AddHours(-1), "secondary", 10080, start, 95, "team"),
+                    new(now.AddHours(-2), "primary", 300, now.AddHours(-1), 80, "team"),
+                    new(now, "primary", 300, now.AddHours(4), 10, "team")]
             };
             var session = new QuotaLedgerSession(new QuotaLedgerStore(Path.Combine(temporary, "normal.json")));
             session.Update(scan, true, now);
@@ -282,7 +284,8 @@ internal static class UiSnapshots
                 await ShowAndCapture(window, directory, "quota-ledger-current");
                 if (!window.ShowInTaskbar || !Descendants<TextBlock>(window).Any(t => t.Text == "16.8K")
                     || !Descendants<TextBlock>(window).Any(t => t.Text == "0%")
-                    || !Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("首次观测 100%")))
+                    || !Descendants<TextBlock>(window).Any(t => t.Text.StartsWith("首次观测 100%"))
+                    || Descendants<TextBlock>(window).Any(t => t.IsVisible && t.Text == "近 30 天观测到的重置"))
                     throw new InvalidOperationException("Native ledger totals or quota observations are not displayed correctly.");
                 VerifyQuotaStatus(window, "已用尽", Ui.Brush("#CB3746"));
                 window.Width = 520; await ShowAndCapture(window, directory, "quota-ledger-narrow");
@@ -295,6 +298,11 @@ internal static class UiSnapshots
                     || !Descendants<TextBlock>(window).Any(t => t.Text == "末次观测周配额 · 已用")
                     || Descendants<Border>(window).Any(b => b.Name == "QuotaStatusDot"))
                     throw new InvalidOperationException("Archived ledger cycle could not be selected.");
+                if (!Descendants<TextBlock>(window).Any(t => t.IsVisible && t.Text == "5 小时 1 次 · 周配额 1 次"))
+                    throw new InvalidOperationException("Reset counts are absent or incorrect in ledger history.");
+                window.Width = 520;
+                await ShowAndCapture(window, directory, "quota-ledger-history-narrow");
+                window.Width = 880;
                 Descendants<RadioButton>(window).Single(r => Equals(r.Content, "自定义")).IsChecked = true;
                 var from = Descendants<TextBox>(window).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "开始本地时间");
                 var to = Descendants<TextBox>(window).Single(t => System.Windows.Automation.AutomationProperties.GetName(t) == "结束本地时间 不包含");
@@ -342,6 +350,9 @@ internal static class UiSnapshots
                 if (Descendants<TextBlock>(emptyWindow).Any(t => t.Text == "0%")
                     || !Descendants<TextBlock>(emptyWindow).Any(t => t.Text == "当前周配额尚无可靠记录"))
                     throw new InvalidOperationException("Missing weekly quota was presented as zero percent.");
+                Descendants<RadioButton>(emptyWindow).Single(r => Equals(r.Content, "历史账本")).IsChecked = true;
+                if (!Descendants<TextBlock>(emptyWindow).Any(t => t.IsVisible && t.Text == "5 小时 暂无记录 · 周配额 暂无记录"))
+                    throw new InvalidOperationException("Missing quota history was presented as a zero count.");
             }
             finally { emptyWindow.Close(); }
             var corruptPath = Path.Combine(temporary, "corrupt.json"); const string damaged = "{ invalid ledger";
