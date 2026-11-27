@@ -54,13 +54,15 @@ public sealed class LogScanner
                             else
                             {
                                 using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                                using var reader = new StreamReader(stream);
+                                var snapshotSize = stream.Length;
+                                using var reader = new StreamReader(new LogSnapshotStream(stream, snapshotSize));
                                 var session = provider == Providers.Antigravity
                                     ? Directory.GetParent(file)?.Parent?.Parent?.Name ?? Path.GetFileNameWithoutExtension(file)
                                     : Path.GetFileNameWithoutExtension(file);
                                 parsed = LogParser.Parse(reader, provider, session, new DateTimeOffset(mtime), cancellationToken);
                                 var after = new FileInfo(file);
-                                if (after.Exists && after.LastWriteTimeUtc == mtime && after.Length == size) cache[key] = new(mtime, size, parsed);
+                                if (snapshotSize == size && after.Exists && after.LastWriteTimeUtc == mtime && after.Length == size)
+                                    cache[key] = new(mtime, size, parsed);
                                 else cache.Remove(key);
                             }
                             events.AddRange(parsed.Events);
@@ -122,4 +124,33 @@ public sealed class LogScanner
             }
         }
     }
+}
+
+/// <summary>A non-owning, read-only view of the bytes present when a log scan starts.</summary>
+internal sealed class LogSnapshotStream(Stream source, long length) : Stream
+{
+    private long remaining = length;
+
+    public override int Read(Span<byte> buffer)
+    {
+        if (remaining == 0) return 0;
+        var count = source.Read(buffer[..(int)Math.Min(buffer.Length, remaining)]);
+        remaining -= count;
+        return count;
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+    public override bool CanRead => source.CanRead;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position
+    {
+        get => throw new NotSupportedException();
+        set => throw new NotSupportedException();
+    }
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

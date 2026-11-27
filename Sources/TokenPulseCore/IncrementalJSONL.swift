@@ -83,6 +83,13 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                 var state = previous?.committed ?? initial
                 var lines = previous?.lines ?? 0
                 var pending = previous?.tail ?? Data()
+                let boundarySize = Int(min(128, stamp.size))
+                let suffixOffset = stamp.size - UInt64(boundarySize)
+                let prefix: Data
+                if let previous, previous.prefix.count == boundarySize { prefix = previous.prefix }
+                else { prefix = try read(0, boundarySize) }
+                let suffix = try read(suffixOffset, boundarySize)
+                guard prefix.count == boundarySize, suffix.count == boundarySize else { throw CocoaError(.fileReadUnknown) }
                 var position = offset
                 // Bound temporary allocations during the initial scan too. Reading a
                 // whole large file through FileHandle leaves a large reusable malloc
@@ -108,17 +115,20 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                     }
                     position += UInt64(count)
                 }
-                guard try Stamp(url) == stamp else { throw CocoaError(.fileReadUnknown) }
                 let tail = pending
                 var preview = state
                 autoreleasepool {
                     if !tail.isEmpty { consume(&preview, tail, lines + 1, stamp.modified) }
                 }
-                let prefix: Data
-                if let previous, previous.prefix.count == 128 { prefix = previous.prefix }
-                else { prefix = try read(0, Int(min(128, stamp.size))) }
-                let suffix = try read(stamp.size - min(128, stamp.size), Int(min(128, stamp.size)))
-                guard try Stamp(url) == stamp else { throw CocoaError(.fileReadUnknown) }
+                let finalStamp = try Stamp(url)
+                if finalStamp != stamp {
+                    // An active writer can append while we parse the original
+                    // length. Keep that prefix and leave the new bytes for the
+                    // next scan, provided the identity and boundaries agree.
+                    guard finalStamp.sameFile(stamp), finalStamp.size > stamp.size,
+                          try read(0, boundarySize) == prefix, try read(suffixOffset, boundarySize) == suffix
+                    else { throw CocoaError(.fileReadUnknown) }
+                }
                 entries[key] = Entry(stamp: stamp, committed: state, preview: preview, tail: tail,
                     lines: lines, prefix: prefix, suffix: suffix)
                 generation &+= 1

@@ -143,6 +143,42 @@ await Test("Scanner append, half-line repair, truncate, delete, Unicode paths an
     File.Delete(file); Equal(0, scanner.Scan(settings).Events.Count);
     Equal(SourceState.Missing, scanner.Scan(settings).Statuses.Single(s => s.Provider == Providers.Codex).State);
 }));
+await Test("Scanner keeps a finite snapshot through a concurrent Codex log append", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    Directory.CreateDirectory(folder.Settings.CodexDirectory);
+    var path = Path.Combine(folder.Settings.CodexDirectory, "active.jsonl");
+    var first = CodexRow(100, 25, now.AddMinutes(-2));
+    var next = CodexRow(150, 26, now.AddMinutes(-1));
+    var split = next.Length / 2;
+    File.WriteAllText(path, first + "\n" + next[..split]);
+    using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+    using var snapshot = new LogSnapshotStream(source, source.Length);
+    File.AppendAllText(path, next[split..] + "\n");
+    using var reader = new StreamReader(snapshot);
+    var parsed = LogParser.Parse(reader, Providers.Codex, "active", now);
+    Equal(1, parsed.PendingLines);
+    Equal(100L, parsed.Events.Single().InputTokens);
+    Equal(25d, parsed.QuotaObservations.Single().UsedPercent);
+
+    var scanner = new LogScanner();
+    var refreshed = scanner.Scan(folder.Settings);
+    Equal(SourceState.Ready, refreshed.Statuses.Single(status => status.Provider == Providers.Codex).State);
+    Equal(26d, refreshed.LatestQuotas(now).Single().UsedPercent);
+    Check(refreshed.NativeCodexEvents.Select(e => e.InputTokens).SequenceEqual([100L, 50L]), "append changed the cumulative deltas");
+    Equal(2, scanner.Scan(folder.Settings).NativeCodexEvents.Count);
+
+    string CodexRow(int tokens, int used, DateTimeOffset recordedAt) => JsonSerializer.Serialize(new
+    {
+        timestamp = recordedAt.UtcDateTime,
+        payload = new
+        {
+            type = "token_count",
+            rate_limits = new { primary = new { used_percent = used, window_minutes = 300, resets_at = now.AddHours(1).ToUnixTimeSeconds() } },
+            info = new { total_token_usage = new { input_tokens = tokens } }
+        }
+    });
+}));
 await Test("Scanner distinguishes inaccessible/wrong paths from missing", () => Sync(() =>
 {
     using var folder = new TestDirectory();

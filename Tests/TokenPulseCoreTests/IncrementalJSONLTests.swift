@@ -66,6 +66,45 @@ struct IncrementalJSONLTests {
         #expect(read().state == ["recreated"])
     }
 
+    @Test func concurrentAppendKeepsTheScannedPrefixAndReadsTheNewTailNextTime() throws {
+        let directory = try TailDirectory(); defer { directory.remove() }
+        let file = directory.url.appendingPathComponent("live.jsonl")
+        let cache = IncrementalJSONL<[String]>()
+        try Data("first\n".utf8).write(to: file)
+        var appendError: Error?
+        let first = cache.read(at: file, initial: []) { state, data, _, _ in
+            state.append(String(decoding: data, as: UTF8.self))
+            do { try append(Data("second\n".utf8), to: file) }
+            catch { appendError = error }
+        }
+        #expect(appendError == nil)
+        #expect(first.readSucceeded && first.state == ["first"])
+
+        let second = cache.read(at: file, initial: []) { state, data, _, _ in
+            state.append(String(decoding: data, as: UTF8.self))
+        }
+        #expect(second.readSucceeded && second.state == ["first", "second"])
+    }
+
+    @Test func concurrentReplacementDoesNotPublishTheOldFileAsCurrent() throws {
+        let directory = try TailDirectory(); defer { directory.remove() }
+        let file = directory.url.appendingPathComponent("rotating.jsonl")
+        let cache = IncrementalJSONL<[String]>()
+        try Data("old\n".utf8).write(to: file)
+        var replacementError: Error?
+        let before = cache.read(at: file, initial: []) { state, data, _, _ in
+            state.append(String(decoding: data, as: UTF8.self))
+            do { try Data("new and longer\n".utf8).write(to: file, options: .atomic) }
+            catch { replacementError = error }
+        }
+        #expect(replacementError == nil)
+        #expect(!before.readSucceeded)
+        let after = cache.read(at: file, initial: []) { state, data, _, _ in
+            state.append(String(decoding: data, as: UTF8.self))
+        }
+        #expect(after.readSucceeded && after.state == ["new and longer"])
+    }
+
     @Test func symbolicLinksFollowTheirTargetAndRetargetingRebuildsTheCache() throws {
         let directory = try TailDirectory(); defer { directory.remove() }
         let first = directory.url.appendingPathComponent("first"), second = directory.url.appendingPathComponent("second")
