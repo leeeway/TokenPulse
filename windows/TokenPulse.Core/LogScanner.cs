@@ -3,15 +3,18 @@ using System.Runtime.InteropServices;
 
 namespace TokenPulse.Core;
 
-/// <summary>Serial, read-only scans. Changed files are reparsed in full to preserve cumulative deltas.</summary>
+/// <summary>Serial, read-only scans over finite snapshots of log files.</summary>
 public sealed class LogScanner
 {
     private readonly record struct FileIdentity(ulong Volume, ulong Low, ulong High);
-    private sealed record Cached(FileIdentity Identity, DateTime Mtime, long Size, ParsedLog Log);
+    private sealed record Cached(FileIdentity Identity, DateTime Mtime, long Size, ParsedLog Log, IncrementalLog? Prefix);
     private readonly Dictionary<(string Provider, string Path), Cached> cache = new();
     private readonly object sync = new();
 
-    public ScanResult Scan(Settings settings, CancellationToken cancellationToken = default)
+    public ScanResult Scan(Settings settings, CancellationToken cancellationToken = default) =>
+        Scan(settings, cancellationToken, null);
+
+    public ScanResult Scan(Settings settings, CancellationToken cancellationToken, Action<LiveQuotaScan>? onCodex)
     {
         lock (sync)
         {
@@ -22,12 +25,15 @@ public sealed class LogScanner
             List<SourceStatus> statuses = [];
             var codexScanPartial = false;
             HashSet<(string Provider, string Path)> visited = [];
-            foreach (var (provider, root, singleFile, enabled) in settings.LogSources())
+            var sources = settings.LogSources().ToArray();
+            IEnumerable<LogSource> scanOrder = onCodex is null ? sources : sources.OrderBy(s => s.Provider != Providers.Codex);
+            foreach (var (provider, root, singleFile, enabled) in scanOrder)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!enabled)
                 {
                     statuses.Add(new(provider, root, SourceState.Disabled, "已关闭 · 不扫描"));
+                    if (provider == Providers.Codex) onCodex?.Invoke(new([], false, false));
                     continue;
                 }
                 var errors = new List<string>();
@@ -57,19 +63,34 @@ public sealed class LogScanner
                             using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                             var snapshotSize = stream.Length;
                             var identity = GetIdentity(stream.SafeFileHandle);
+                            cache.TryGetValue(key, out var entry);
                             ParsedLog parsed;
-                            if (identity is { } known && cache.TryGetValue(key, out var entry) && entry.Identity == known
+                            if (identity is { } known && entry?.Identity == known
                                 && entry.Mtime == mtime && entry.Size == size && snapshotSize == size) parsed = entry.Log;
                             else
                             {
-                                using var reader = new StreamReader(new LogSnapshotStream(stream, snapshotSize));
                                 var session = provider == Providers.Antigravity
                                     ? Directory.GetParent(file)?.Parent?.Parent?.Name ?? Path.GetFileNameWithoutExtension(file)
                                     : Path.GetFileNameWithoutExtension(file);
-                                parsed = LogParser.Parse(reader, provider, session, new DateTimeOffset(mtime), cancellationToken);
+                                var previous = identity is { } same && entry?.Identity == same
+                                    && (entry.Mtime == mtime || entry.Prefix?.UsedFallback != true) ? entry.Prefix : null;
+                                IncrementalLog? prefix;
+                                if (identity.HasValue)
+                                {
+                                    (parsed, prefix) = IncrementalLog.Read(stream, snapshotSize, provider, session,
+                                        new DateTimeOffset(mtime), previous, cancellationToken);
+                                }
+                                else
+                                {
+                                    using var reader = new StreamReader(new LogSnapshotStream(stream, snapshotSize));
+                                    parsed = LogParser.Parse(reader, provider, session, new DateTimeOffset(mtime), cancellationToken);
+                                    prefix = null;
+                                }
                                 var after = new FileInfo(file);
-                                if (identity is { } current && snapshotSize == size && after.Exists && after.LastWriteTimeUtc == mtime && after.Length == size)
-                                    cache[key] = new(current, mtime, size, parsed);
+                                if (identity is { } current && after.Exists
+                                    && ((after.Length == snapshotSize && after.LastWriteTimeUtc == mtime)
+                                        || (after.Length > snapshotSize && prefix is not null)))
+                                    cache[key] = new(current, mtime, snapshotSize, parsed, prefix);
                                 else cache.Remove(key);
                             }
                             events.AddRange(parsed.Events);
@@ -100,9 +121,16 @@ public sealed class LogScanner
                 if (unknownDates > 0) message += $" · {unknownDates} 条时间未知，仅计入全部用量";
                 if (errors.Count > 0) message += $" · 访问失败（{errors.Count} 项）：{errors[0]}";
                 statuses.Add(new(provider, root, state, message));
+                if (provider == Providers.Codex && onCodex is not null)
+                {
+                    var latest = (codexScanPartial || state is SourceState.Ready or SourceState.Warning)
+                        ? QuotaObservation.LatestByWindow(observations, DateTimeOffset.UtcNow) : [];
+                    onCodex(new(latest, codexScanPartial, limits.Count > 0));
+                }
             }
             foreach (var key in cache.Keys.Where(key => !visited.Contains(key)).ToArray()) cache.Remove(key);
-            return new(events, limits.GroupBy(r => r.Provider).Select(g => g.MaxBy(r => r.UpdatedAt)!).ToArray(), statuses)
+            var orderedStatuses = onCodex is null ? statuses : sources.Select(s => statuses.Single(status => status.Provider == s.Provider)).ToList();
+            return new(events, limits.GroupBy(r => r.Provider).Select(g => g.MaxBy(r => r.UpdatedAt)!).ToArray(), orderedStatuses)
             {
                 NativeCodexEvents = nativeCodexEvents,
                 QuotaObservations = observations.Distinct().OrderBy(o => o.RecordedAtUtc).ToArray(),
@@ -164,6 +192,7 @@ public sealed class LogScanner
 internal sealed class LogSnapshotStream(Stream source, long length) : Stream
 {
     private long remaining = length;
+    internal long Remaining => remaining;
 
     public override int Read(Span<byte> buffer)
     {

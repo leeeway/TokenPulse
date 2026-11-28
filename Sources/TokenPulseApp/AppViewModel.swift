@@ -26,6 +26,7 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
 
 protocol DashboardCollecting: Sendable {
     func refreshLogCache(now: Date)
+    func refreshLogCache(now: Date, onCodex: (@Sendable (CodexLedgerInput) -> Void)?)
     func snapshotFromCache(window: TimeWindow, now: Date) -> DashboardSnapshot
     func refreshOllamaModels() async -> [LocalRunningModel]
     var lastScanAt: Date? { get }
@@ -40,6 +41,10 @@ extension DashboardCollecting {
     var logWatchDirectories: [URL] { [] }
     func refreshOllamaModelsIfDue(now: Date, force: Bool) async -> [LocalRunningModel] { await refreshOllamaModels() }
     func ledgerInputForApp() -> CodexLedgerInput? { nil }
+    func refreshLogCache(now: Date, onCodex: (@Sendable (CodexLedgerInput) -> Void)?) {
+        refreshLogCache(now: now)
+        if let input = ledgerInputForApp() { onCodex?(input) }
+    }
 }
 
 extension UsageCollector: DashboardCollecting {
@@ -234,7 +239,6 @@ public final class AppViewModel: ObservableObject {
         let readings = input.partialRead ? QuotaObservation.latestByWindow(codexQuotas + verified, at: now) : verified
         if codexQuotas != readings { codexQuotas = readings }
         advanceQuotaClock(to: now)
-        ledger.receive(input, at: now)
         guard quotaNotificationsEnabled else { return }
         let alerts = quotaAlerts.claim(verified.filter { readings.contains($0) }, at: now)
         guard !alerts.isEmpty else { return }
@@ -300,12 +304,18 @@ public final class AppViewModel: ObservableObject {
         lastRefreshStartedAt = now
         refreshTask = Task { [weak self] in
             async let models = collector.refreshOllamaModelsIfDue(now: now, force: forceOllama)
-            let ledgerInput = await Task.detached(priority: .utility) {
-                collector.refreshLogCache(now: now)
+            let (earlyQuotas, publishQuota) = AsyncStream<CodexLedgerInput>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let scan = Task.detached(priority: .utility) {
+                defer { publishQuota.finish() }
+                collector.refreshLogCache(now: now, onCodex: { publishQuota.yield($0) })
                 return collector.ledgerInputForApp()
-            }.value
+            }
+            for await input in earlyQuotas {
+                if let self { self.receiveQuotas(input, now: self.clock()) }
+            }
+            let ledgerInput = await scan.value
             self?.renderFromCache()
-            if let self, let ledgerInput { receiveQuotas(ledgerInput, now: clock()) }
+            if let self, let ledgerInput { ledger.receive(ledgerInput, at: clock()) }
             let refreshedModels = await models
             guard let self else { return }
             if refreshedModels != snapshot.runningLocalModels || collector.ollamaStatus != ollamaStatus {

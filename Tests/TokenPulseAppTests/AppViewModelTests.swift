@@ -96,6 +96,46 @@ private final class ControlledCollector: DashboardCollecting, @unchecked Sendabl
 
 @Suite("Mac dashboard refresh and preferences")
 struct AppViewModelTests {
+    private struct SlowSource: ProviderAdapter {
+        let provider = AIProvider.claudeCode
+        let started: DispatchSemaphore
+        let resume: DispatchSemaphore
+        func scan() -> AdapterScanResult {
+            started.signal()
+            _ = resume.wait(timeout: .now() + 5)
+            return AdapterScanResult(provider: provider, events: [])
+        }
+    }
+
+    @Test @MainActor
+    func menuBarQuotaPublishesBeforeAnotherProviderFinishesScanning() async throws {
+        let suite = "TokenPulse.Tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let logs = root.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 1792540800)
+        let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-1))
+        let reset = Int(now.addingTimeInterval(3600).timeIntervalSince1970)
+        let row = #"{"timestamp":"\#(stamp)","payload":{"type":"token_count","rate_limits":{"primary":{"window_minutes":300,"resets_at":\#(reset),"used_percent":25}}}}"#
+        try (row + "\n").write(to: logs.appendingPathComponent("quota.jsonl"), atomically: true, encoding: .utf8)
+        let started = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        defer { resume.signal() }
+        let collector = UsageCollector(adapters: [SlowSource(started: started, resume: resume), CodexAdapter(baseDirectory: logs)],
+                                       customEventsURL: root.appendingPathComponent("custom.jsonl"))
+        let model = AppViewModel(collector: collector, defaults: defaults, startsAutomatically: false,
+                                 clock: { now }, ledgerDirectory: root.appendingPathComponent("ledger"))
+        model.refreshAutomatically()
+        try await eventually { started.wait(timeout: .now()) == .success }
+        try await eventually { model.lowestQuota?.remainingPercent == 75 }
+        #expect(model.isRefreshing && model.lastScanAt == nil)
+        resume.signal()
+        try await eventually { !model.isRefreshing && model.lastScanAt != nil }
+    }
+
     @Test @MainActor
     func latePeriodCompletionCannotReplaceLatestSelection() async throws {
         let suite = "TokenPulse.Tests." + UUID().uuidString

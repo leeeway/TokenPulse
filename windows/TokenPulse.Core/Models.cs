@@ -53,6 +53,7 @@ public sealed record ParsedLog(IReadOnlyList<UsageEvent> Events, RateLimit? Rate
 }
 public enum SourceState { Ready, Missing, Error, Disabled, Warning }
 public sealed record SourceStatus(string Provider, string Path, SourceState State, string Message);
+public sealed record LiveQuotaScan(IReadOnlyList<QuotaObservation> Observations, bool PartialRead, bool HasUnverifiedQuota);
 public sealed record ScanResult(IReadOnlyList<UsageEvent> Events, IReadOnlyList<RateLimit> RateLimits,
     IReadOnlyList<SourceStatus> Statuses)
 {

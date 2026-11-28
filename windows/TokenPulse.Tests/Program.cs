@@ -179,6 +179,74 @@ await Test("Scanner keeps a finite snapshot through a concurrent Codex log appen
         }
     });
 }));
+await Test("Incremental parser preserves full-scan results through append, interior rewrite and truncation", () => Sync(() =>
+{
+    var rows = Fixture("codex").Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd().Split('\n');
+    var unicodeModel = rows[0].Replace("gpt-5-codex", "模型");
+    var pad = "{\"ignored\":\"" + new string('x', 300) + "\"}";
+    var text = pad + "\r\n" + unicodeModel + "\r\n" + rows[1] + "\r\n" + pad + "\r\n" + rows[2][..100];
+    IncrementalLog? prefix = null;
+    ParsedLog Verify(string data)
+    {
+        using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(data));
+        var (actual, next) = IncrementalLog.Read(stream, stream.Length, Providers.Codex, "test-session", now, prefix, default);
+        var expected = Parse(Providers.Codex, data);
+        Check(actual.Events.SequenceEqual(expected.Events), "incremental usage differs from a full parse");
+        Check(actual.QuotaObservations.SequenceEqual(expected.QuotaObservations), "incremental quota differs from a full parse");
+        Check(actual.RateLimit == expected.RateLimit, "incremental rate-limit metadata differs");
+        Equal(expected.MalformedLines, actual.MalformedLines);
+        Equal(expected.PendingLines, actual.PendingLines);
+        prefix = next;
+        return actual;
+    }
+    var initial = Verify(text);
+    Equal(1, initial.PendingLines);
+    text += rows[2][100..] + "\r\n";
+    var appended = Verify(text);
+    Check(ReferenceEquals(initial.Events[0], appended.Events[0]), "an unchanged prefix was parsed again");
+    Equal("模型", appended.Events[1].Model);
+    text += "{\"half\":\n";
+    Equal(1, Verify(text).PendingLines);
+    text += pad + "\n";
+    Equal(1, Verify(text).MalformedLines);
+    text = text.Replace("\"used_percent\":12.5", "\"used_percent\":87.5", StringComparison.Ordinal) + pad + "\n";
+    Equal(87.5, Verify(text).QuotaObservations.Single(o => o.WindowMinutes == 300).UsedPercent);
+    Equal(1, Verify(rows[1]).Events.Count);
+    Equal(2, Verify(rows[1] + "\n" + rows[2] + "\n").Events.Count);
+}));
+await Test("Incremental reader keeps BOM and CR-only compatibility", () => Sync(() =>
+{
+    var text = Fixture("codex").Replace("\r\n", "\n", StringComparison.Ordinal)
+        .TrimEnd().Replace('\n', '\r');
+    var expected = Parse(Providers.Codex, text);
+    foreach (var encoding in new[] { System.Text.Encoding.UTF8, System.Text.Encoding.Unicode, System.Text.Encoding.UTF32 })
+    {
+        using var stream = new MemoryStream([.. encoding.GetPreamble(), .. encoding.GetBytes(text)]);
+        var (actual, _) = IncrementalLog.Read(stream, stream.Length, Providers.Codex, "test-session", now, null, default);
+        Check(expected.Events.SequenceEqual(actual.Events), $"usage mismatch with {encoding.WebName}");
+        Check(expected.QuotaObservations.SequenceEqual(actual.QuotaObservations), $"quota mismatch with {encoding.WebName}");
+    }
+}));
+await Test("Scanner publishes Codex quota before touching other sources without scanning it twice", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    Directory.CreateDirectory(folder.Settings.CodexDirectory);
+    var codex = Path.Combine(folder.Settings.CodexDirectory, "live.jsonl");
+    File.WriteAllText(codex, Fixture("codex"));
+    var published = 0;
+    var scan = new LogScanner().Scan(folder.Settings, default, update =>
+    {
+        published++;
+        Equal(12.5, update.Observations.Single(o => o.WindowMinutes == 300).UsedPercent);
+        Directory.CreateDirectory(folder.Settings.ClaudeDirectory);
+        File.WriteAllText(Path.Combine(folder.Settings.ClaudeDirectory, "slow.jsonl"), Fixture("claude"));
+        File.Delete(codex);
+    });
+    Equal(1, published);
+    Equal(2, scan.Events.Count(e => e.Provider == Providers.Claude));
+    Equal(2, scan.NativeCodexEvents.Count);
+    Equal(Providers.Claude, scan.Statuses[0].Provider);
+}));
 await Test("An inaccessible Codex log does not suppress readable live quota windows", () => Sync(() =>
 {
     using var folder = new TestDirectory();

@@ -120,7 +120,14 @@ internal sealed class App : Application
         try
         {
             await RefreshPipeline.RunAsync(
-                () => Task.Run(() => scanner.Scan(currentSettings, stopping.Token), stopping.Token),
+                () => Task.Run(() => scanner.Scan(currentSettings, stopping.Token, update =>
+                {
+                    Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() =>
+                    {
+                        try { PublishQuota(update, currentSettings); }
+                        catch (Exception ex) { dashboard?.ShowError("配额刷新失败，将在下一轮重试：" + ex.Message); }
+                    }));
+                }), stopping.Token),
                 () => currentSettings.EnableOllama ? ollama.ReadAsync(stopping.Token)
                     : Task.FromResult(new OllamaResult([], "Ollama 查询已关闭")),
                 async result =>
@@ -128,19 +135,11 @@ internal sealed class App : Application
                     if (currentSettings != settings || stopping.IsCancellationRequested) return;
                     var observedAt = DateTimeOffset.UtcNow;
                     scan = result; scanSettings = currentSettings;
-                    var verified = currentSettings.EnableCodex ? result.LatestQuotas(observedAt) : [];
-                    quotas = currentSettings.EnableCodex && result.CodexScanPartial
-                        ? QuotaObservation.LatestByWindow(quotas.Concat(verified), observedAt) : verified;
-                    hasUnverifiedQuota = currentSettings.EnableCodex && result.RateLimits.Any(rate => rate.Provider == Providers.Codex);
-                    var shownAt = DateTimeOffset.UtcNow;
-                    UpdateQuotaTime(shownAt);
-                    ScheduleQuotaReset(shownAt);
                     if (ledger is { } session && ledgerGeneration is { } generation)
                     {
                         pendingLedgerRefresh = new(result, currentSettings.EnableCodex, observedAt, generation);
                         if (!updatingLedger) _ = UpdateLedgerAsync(session);
                     }
-                    if (currentSettings.EnableQuotaNotifications) NotifyQuota(verified.Where(q => quotas.Contains(q)), shownAt);
                     localModels = new([], currentSettings.EnableOllama ? "正在查询 Ollama…" : "Ollama 查询已关闭");
                     dashboard?.ShowError(settingsWarning);
                     await RenderAsync();
@@ -162,6 +161,19 @@ internal sealed class App : Application
             quotaRefreshPending = false;
             if (refreshAgain && !stopping.IsCancellationRequested) _ = RefreshAsync();
         }
+    }
+
+    private void PublishQuota(LiveQuotaScan update, Settings currentSettings)
+    {
+        if (currentSettings != settings || stopping.IsCancellationRequested) return;
+        var now = DateTimeOffset.UtcNow;
+        quotas = update.PartialRead
+            ? QuotaObservation.LatestByWindow(quotas.Concat(update.Observations), now) : update.Observations;
+        hasUnverifiedQuota = update.HasUnverifiedQuota;
+        UpdateQuotaTime(now);
+        ScheduleQuotaReset(now);
+        if (currentSettings.EnableQuotaNotifications)
+            NotifyQuota(update.Observations.Where(q => quotas.Contains(q)), now);
     }
 
     private async Task UpdateLedgerAsync(QuotaLedgerSession session)

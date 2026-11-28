@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 /// One cache per source. Commits complete lines and previews an unfinished final
 /// line on a copy, so a valid JSON object without LF is visible without duplication.
@@ -73,15 +74,18 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                 if let old = entries[key], stamp.sameFile(old.stamp), stamp.size > old.stamp.size {
                     // A larger file can also have been rewritten in place. Hash the
                     // existing prefix before reusing its cumulative parser state.
-                    var checked: UInt64 = 0
-                    while checked < old.stamp.size {
-                        let count = Int(min(UInt64(chunkSize), old.stamp.size - checked))
-                        try autoreleasepool {
-                            let chunk = try read(checked, count)
-                            guard chunk.count == count else { throw CocoaError(.fileReadUnknown) }
-                            digest.update(data: chunk)
-                        }
-                        checked += UInt64(count)
+                    try handle.seek(toOffset: 0)
+                    let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: chunkSize, alignment: 16)
+                    defer { buffer.deallocate() }
+                    var remaining = old.stamp.size
+                    while remaining > 0 {
+                        let count = Darwin.read(handle.fileDescriptor, buffer.baseAddress!, Int(min(UInt64(chunkSize), remaining)))
+                        if count < 0 && errno == EINTR { continue }
+                        guard count > 0 else { throw CocoaError(.fileReadUnknown) }
+                        bytesRead += UInt64(count)
+                        maximumReadSize = max(maximumReadSize, count)
+                        digest.update(bufferPointer: UnsafeRawBufferPointer(start: buffer.baseAddress, count: count))
+                        remaining -= UInt64(count)
                     }
                     if digest.finalize() == old.digest { previous = old }
                     else { digest = SHA256() }

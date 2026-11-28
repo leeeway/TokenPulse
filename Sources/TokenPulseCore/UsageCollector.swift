@@ -91,23 +91,39 @@ public final class UsageCollector: @unchecked Sendable {
 
     /// Refreshes read-only log data without performing an unused period aggregation.
     public func refreshLogCache(now: Date = Date()) {
+        refreshLogCache(now: now, onCodex: nil)
+    }
+
+    /// Reports the native Codex result before scanning the other providers.
+    public func refreshLogCache(now: Date, onCodex: (@Sendable (CodexLedgerInput) -> Void)?) {
         var events: [TokenUsageEvent] = []
         var rateLimits: [AIProvider: RateLimitSnapshot] = [:]
         var revisions: [UInt64] = []
         var cacheable = true
         var nativeLedger = CodexLedgerInput.empty(scannedAt: now)
 
-        for adapter in adapters {
+        let indexedAdapters = Array(adapters.enumerated())
+        let scanOrder = onCodex == nil ? indexedAdapters
+            : indexedAdapters.filter { $0.element.provider == .codex } + indexedAdapters.filter { $0.element.provider != .codex }
+        var scanned = [AdapterScanResult?](repeating: nil, count: adapters.count)
+        var quotaPublished = false
+        for (index, adapter) in scanOrder {
+            if let onCodex, !quotaPublished && adapter.provider != .codex {
+                onCodex(nativeLedger)
+                quotaPublished = true
+            }
             let result = adapter.scan()
-            if let revision = result.contentRevision { revisions.append(revision) } else { cacheable = false }
-            events.append(contentsOf: result.events)
+            scanned[index] = result
             if adapter.provider == .codex, let ledger = result.ledgerInput {
                 nativeLedger = CodexLedgerInput(events: ledger.events, observations: ledger.observations,
                     scannedAt: now, sourceAvailable: ledger.sourceAvailable, warnings: ledger.warnings, partialRead: ledger.partialRead)
             }
-            if let rl = result.rateLimit {
-                rateLimits[adapter.provider] = rl
-            }
+        }
+        if !quotaPublished { onCodex?(nativeLedger) }
+        for case let result? in scanned {
+            if let revision = result.contentRevision { revisions.append(revision) } else { cacheable = false }
+            events.append(contentsOf: result.events)
+            if let rl = result.rateLimit { rateLimits[result.provider] = rl }
         }
 
         events.append(contentsOf: loadCustomEvents())
