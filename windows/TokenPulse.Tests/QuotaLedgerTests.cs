@@ -204,6 +204,44 @@ internal static class QuotaLedgerTests
             session.Update(Scan(state:SourceState.Error),true,now.AddMinutes(2));Check(session.View().Current is null);
             session.Suspend(false);Check(!session.View().NativeSourceAvailable);
         });
+        Test("partial scans and clock-only changes do not rewrite the ledger", () =>
+        {
+            using var directory = new LedgerDirectory();
+            var session = new QuotaLedgerSession(new QuotaLedgerStore(directory.File));
+            session.Update(Scan(), true, now);
+            var saved = File.ReadAllText(directory.File);
+            session.Update(Scan(), true, now.AddSeconds(4));
+            Check(File.ReadAllText(directory.File) == saved, "unchanged data rewrote the ledger");
+            Check(session.View().Current?.GeneratedAtUtc == now.AddSeconds(4), "live snapshot did not advance");
+            var partial = Scan(state: SourceState.Error) with { CodexScanPartial = true };
+            session.Update(partial, true, end.AddSeconds(1));
+            Check(partial.LatestQuotas(now).Length == 1);
+            Check(!session.View().NativeSourceAvailable && session.View().Current is null);
+            Check(session.View().Status.Contains("部分 Codex 日志不可读"));
+            Check(File.ReadAllText(directory.File) == saved, "partial input changed the saved archive");
+            session.Update(Scan(), true, end.AddSeconds(2));
+            Check(session.View().Cycles.Single().Archived && File.ReadAllText(directory.File) != saved);
+        });
+        Test("reading and invalidating the ledger view do not wait for the writer", () =>
+        {
+            using var directory = new LedgerDirectory();
+            var session = new QuotaLedgerSession(new QuotaLedgerStore(directory.File));
+            session.Update(Scan(), true, now);
+            var writerGate = typeof(QuotaLedgerSession).GetField("gate",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(session)!;
+            lock (writerGate)
+            {
+                var reader = Task.Run(() =>
+                {
+                    var generation = session.Generation;
+                    Check(session.View().Current is not null);
+                    session.Suspend(false);
+                    Check(!session.View().NativeSourceAvailable && session.Generation > generation);
+                });
+                Check(reader.Wait(TimeSpan.FromSeconds(3)), "the UI read waited for the ledger writer");
+                reader.GetAwaiter().GetResult();
+            }
+        });
         Test("clear retains current and prevents automatic ended-period refill until rebuild",()=>
         {
             using var directory=new LedgerDirectory();var session=new QuotaLedgerSession(new(directory.File));

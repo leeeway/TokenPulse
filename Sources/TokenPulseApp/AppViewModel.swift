@@ -230,12 +230,13 @@ public final class AppViewModel: ObservableObject {
     }
 
     private func receiveQuotas(_ input: CodexLedgerInput, now: Date) {
-        let readings = input.latestQuotas(at: now)
+        let verified = input.latestQuotas(at: now)
+        let readings = input.partialRead ? QuotaObservation.latestByWindow(codexQuotas + verified, at: now) : verified
         if codexQuotas != readings { codexQuotas = readings }
         advanceQuotaClock(to: now)
         ledger.receive(input, at: now)
         guard quotaNotificationsEnabled else { return }
-        let alerts = quotaAlerts.claim(codexQuotas, at: now)
+        let alerts = quotaAlerts.claim(verified.filter { readings.contains($0) }, at: now)
         guard !alerts.isEmpty else { return }
         defaults.set(try? JSONEncoder().encode(quotaAlerts), forKey: "quotaAlertCycles")
         if let notificationSink {

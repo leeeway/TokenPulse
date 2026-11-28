@@ -203,6 +203,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         var allObservations: [QuotaObservation] = []
         var latestRateLimit: RateLimitSnapshot?
         var errors = false
+        var readAny = false
         var warnings: [String] = []
         var visited = Set<String>()
         guard let enumerator = fm.enumerator(at: baseDirectory,
@@ -222,6 +223,7 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
             }
             let parsed = result.state.parsed
             if !result.readSucceeded { errors = true }
+            else { readAny = true }
             allEvents.append(contentsOf: parsed.events)
             allObservations.append(contentsOf: parsed.observations)
             if let limit = parsed.rateLimit, latestRateLimit == nil || limit.updatedAt > latestRateLimit!.updatedAt { latestRateLimit = limit }
@@ -231,7 +233,8 @@ public final class CodexAdapter: ProviderAdapter, @unchecked Sendable {
         if visited.isEmpty { warnings.append("没有发现 Codex 原生日志文件。") }
         return AdapterScanResult(provider: provider, events: allEvents, rateLimit: latestRateLimit,
             ledgerInput: CodexLedgerInput(events: allEvents, observations: allObservations,
-                                         sourceAvailable: !errors, warnings: warnings), contentRevision: cache.revision)
+                                         sourceAvailable: !errors, warnings: warnings, partialRead: errors && readAny),
+            contentRevision: cache.revision)
     }
 
     public static func parseRolloutFile(

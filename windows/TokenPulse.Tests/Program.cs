@@ -179,6 +179,38 @@ await Test("Scanner keeps a finite snapshot through a concurrent Codex log appen
         }
     });
 }));
+await Test("An inaccessible Codex log does not suppress readable live quota windows", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    Directory.CreateDirectory(folder.Settings.CodexDirectory);
+    File.WriteAllText(Path.Combine(folder.Settings.CodexDirectory, "active.jsonl"), Fixture("codex"));
+    var old = Path.Combine(folder.Settings.CodexDirectory, "old.jsonl");
+    File.WriteAllText(old, "{}\n");
+    using var locked = new FileStream(old, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    var result = new LogScanner().Scan(folder.Settings);
+    Check(result.CodexScanPartial, "readable and inaccessible files must both be reported");
+    Equal(SourceState.Error, result.Statuses.Single(s => s.Provider == Providers.Codex).State);
+    Equal(12.5, result.LatestQuotas(now).Single(o => o.WindowMinutes == 300).UsedPercent);
+}));
+await Test("A replacement with the same length and modification time invalidates the quota cache", () => Sync(() =>
+{
+    using var folder = new TestDirectory();
+    Directory.CreateDirectory(folder.Settings.CodexDirectory);
+    var path = Path.Combine(folder.Settings.CodexDirectory, "active.jsonl");
+    var replacement = path + ".tmp";
+    var data = Fixture("codex");
+    File.WriteAllText(path, data);
+    var timestamp = File.GetLastWriteTimeUtc(path);
+    var length = new FileInfo(path).Length;
+    var scanner = new LogScanner();
+    Equal(12.5, scanner.Scan(folder.Settings).LatestQuotas(now).Single(o => o.WindowMinutes == 300).UsedPercent);
+    File.WriteAllText(replacement, data.Replace("\"used_percent\":12.5", "\"used_percent\":87.5", StringComparison.Ordinal));
+    File.SetLastWriteTimeUtc(replacement, timestamp);
+    File.Move(replacement, path, overwrite: true);
+    Equal(length, new FileInfo(path).Length);
+    Equal(timestamp, File.GetLastWriteTimeUtc(path));
+    Equal(87.5, scanner.Scan(folder.Settings).LatestQuotas(now).Single(o => o.WindowMinutes == 300).UsedPercent);
+}));
 await Test("Scanner distinguishes inaccessible/wrong paths from missing", () => Sync(() =>
 {
     using var folder = new TestDirectory();

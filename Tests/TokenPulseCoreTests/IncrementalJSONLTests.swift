@@ -15,14 +15,16 @@ private func append(_ data: Data, to url: URL) throws {
 
 @Suite("Incremental native and custom logs")
 struct IncrementalJSONLTests {
-    @Test func readsOnlyAppendedBytesAndPreviewsTheTailWithoutDoubleCounting() throws {
+    @Test func onlyParsesAppendedLinesAndPreviewsTheTailWithoutDoubleCounting() throws {
         let directory = try TailDirectory(); defer { directory.remove() }
         let file = directory.url.appendingPathComponent("尾部.jsonl")
         var data = Data(String(repeating: "x", count: 2_000_000).utf8)
         data.append(Data("\n{\"n\":1}".utf8)); try data.write(to: file)
         let cache = IncrementalJSONL<[Int]>()
+        var parsedLines: [Int] = []
         func read() -> [Int] {
-            cache.read(at: file, initial: []) { state, line, _, _ in
+            cache.read(at: file, initial: []) { state, line, index, _ in
+                parsedLines.append(index)
                 if let json = try? JSONSerialization.jsonObject(with: line) as? [String: Int], let n = json["n"] { state.append(n) }
             }.state
         }
@@ -32,12 +34,38 @@ struct IncrementalJSONLTests {
         #expect(read() == [1] && cache.bytesRead == initialBytes && cache.revision == revision)
         let extra = Data("\n{\"n\":2}\n{\"n\":".utf8)
         try append(extra, to: file)
+        parsedLines.removeAll()
         #expect(read() == [1, 2])
-        #expect(cache.bytesRead - initialBytes <= UInt64(extra.count + 512))
+        #expect(parsedLines == [2, 3, 4])
+        #expect(cache.bytesRead - initialBytes <= UInt64(data.count + extra.count + 512))
         try append(Data("3}".utf8), to: file)
         #expect(read() == [1, 2, 3])
         try append(Data("\n".utf8), to: file)
         #expect(read() == [1, 2, 3])
+    }
+
+    @Test func interiorRewriteBeforeAppendInvalidatesTheCachedPrefix() throws {
+        let directory = try TailDirectory(); defer { directory.remove() }
+        let file = directory.url.appendingPathComponent("active.jsonl")
+        let margin = String(repeating: "x", count: 300) + "\n"
+        try Data((margin + "old\n" + margin).utf8).write(to: file)
+        let cache = IncrementalJSONL<[String]>()
+        func read() -> [String] {
+            cache.read(at: file, initial: []) { state, line, _, _ in
+                state.append(String(decoding: line, as: UTF8.self))
+            }.state
+        }
+        #expect(read()[1] == "old")
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seek(toOffset: UInt64(margin.utf8.count))
+        try handle.write(contentsOf: Data("new\n".utf8))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("tail\n".utf8))
+        try handle.close()
+        let result = read()
+        #expect(result[1] == "new")
+        #expect(result.last == "tail" && result.count == 4)
+        #expect(read() == result)
     }
 
     @Test func truncateReplaceRewriteAndDeleteInvalidateTheTailState() throws {

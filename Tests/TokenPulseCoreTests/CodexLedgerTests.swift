@@ -199,6 +199,37 @@ struct CodexLedgerTests {
         #expect(store.update(input: input, now: after).current?.quotaUsedPercent == 5)
     }
 
+    @Test func unreadableOldLogKeepsLiveQuotaAndLeavesTheLedgerOnDiskIntact() throws {
+        let temp = try LedgerTestDirectory(); defer { temp.remove() }
+        let logs = temp.url.appendingPathComponent("logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let active = logs.appendingPathComponent("active.jsonl")
+        try quotaLine(used: 65).write(to: active, atomically: true, encoding: .utf8)
+        let collector = UsageCollector(adapters: [CodexAdapter(baseDirectory: logs)],
+                                       customEventsURL: temp.url.appendingPathComponent("custom.jsonl"))
+        let store = CodexLedgerStore(directory: temp.url.appendingPathComponent("ledger"))
+        collector.refreshLogCache(now: reportNow)
+        let first = store.update(input: collector.ledgerInputFromCache(), now: reportNow)
+        #expect(first.current?.quotaUsedPercent == 65)
+        let saved = try Data(contentsOf: store.fileURL)
+
+        let blocked = logs.appendingPathComponent("blocked.jsonl")
+        try Data("{}\n".utf8).write(to: blocked)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: blocked.path)
+        try quotaLine(used: 85).write(to: active, atomically: true, encoding: .utf8)
+        collector.refreshLogCache(now: reportNow.addingTimeInterval(1))
+        let partial = collector.ledgerInputFromCache()
+        #expect(partial.partialRead && !partial.sourceAvailable)
+        #expect(partial.latestQuotas(at: reportNow).first?.usedPercent == 85)
+        #expect(collector.sourceWarnings.contains { $0.contains("部分") })
+        #expect(store.update(input: partial, now: reportNow).current == nil)
+        #expect(try Data(contentsOf: store.fileURL) == saved)
+
+        try FileManager.default.removeItem(at: blocked)
+        collector.refreshLogCache(now: reportNow.addingTimeInterval(2))
+        #expect(store.update(input: collector.ledgerInputFromCache(), now: reportNow).current?.quotaUsedPercent == 85)
+    }
+
     @Test func currentCycleDoesNotInventResetAndConflictsRemainVisible() throws {
         let ended = CodexLedgerInput(observations: [quota()], sourceAvailable: true)
         #expect(CodexLedgerEngine.currentReport(input: ended, now: cycleEnd.addingTimeInterval(1)) == nil)

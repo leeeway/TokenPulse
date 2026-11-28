@@ -40,6 +40,7 @@ public final class CodexLedgerStore: @unchecked Sendable {
         lock.withLock {
             if let old = lastInput.scannedAt, let new = input.scannedAt, new < old { return lastState }
             lastInput = input
+            if input.partialRead { return stateLocked(input: input, now: now, timeZone: timeZone, warning: loadError) }
             return updateLocked(input: input, now: now, timeZone: timeZone)
         }
     }
@@ -101,7 +102,7 @@ public final class CodexLedgerStore: @unchecked Sendable {
                              preparedReports: [UsageReportSnapshot]? = nil) -> LedgerViewState {
         var warnings = input.warnings
         if let warning { warnings.append(warning) }
-        if !input.sourceAvailable { warnings.append("Codex 原生日志不可用，本轮统计未更新；历史本地归档继续保留。") }
+        if !input.sourceAvailable && !input.partialRead { warnings.append("Codex 原生日志不可用，本轮统计未更新；历史本地归档继续保留。") }
         let current: UsageReportSnapshot?
         if let preparedReports {
             current = CodexLedgerEngine.currentObservation(input: input, now: now).flatMap { observation in

@@ -52,15 +52,17 @@ public struct CodexLedgerInput: Sendable {
     public let scannedAt: Date?
     public let sourceAvailable: Bool
     public let warnings: [String]
+    public let partialRead: Bool
     public init(events: [TokenUsageEvent] = [], observations: [QuotaObservation] = [], scannedAt: Date? = nil,
-                sourceAvailable: Bool = false, warnings: [String] = []) {
+                sourceAvailable: Bool = false, warnings: [String] = [], partialRead: Bool = false) {
         self.events = events; self.observations = observations; self.scannedAt = scannedAt
         self.sourceAvailable = sourceAvailable; self.warnings = warnings
+        self.partialRead = partialRead
     }
     public static func empty(scannedAt: Date? = nil) -> Self { Self(scannedAt: scannedAt) }
 
     public func latestQuotas(at now: Date) -> [QuotaObservation] {
-        sourceAvailable ? QuotaObservation.latestByWindow(observations, at: now) : []
+        sourceAvailable || partialRead ? QuotaObservation.latestByWindow(observations, at: now) : []
     }
 }
 

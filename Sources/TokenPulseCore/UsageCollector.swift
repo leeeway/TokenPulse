@@ -24,6 +24,7 @@ public final class UsageCollector: @unchecked Sendable {
 
     public var sourceWarnings: [String] {
         adapters.compactMap { adapter in adapter.accessWarning }
+            + lock.withLock { cachedLedgerInput.sourceAvailable ? [] : cachedLedgerInput.warnings }
     }
 
     public init(adapters: [ProviderAdapter]? = nil, customEventsURL: URL? = nil, ollamaSession: URLSession = .shared) {
@@ -102,7 +103,7 @@ public final class UsageCollector: @unchecked Sendable {
             events.append(contentsOf: result.events)
             if adapter.provider == .codex, let ledger = result.ledgerInput {
                 nativeLedger = CodexLedgerInput(events: ledger.events, observations: ledger.observations,
-                    scannedAt: now, sourceAvailable: ledger.sourceAvailable, warnings: ledger.warnings)
+                    scannedAt: now, sourceAvailable: ledger.sourceAvailable, warnings: ledger.warnings, partialRead: ledger.partialRead)
             }
             if let rl = result.rateLimit {
                 rateLimits[adapter.provider] = rl

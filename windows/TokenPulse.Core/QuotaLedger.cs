@@ -218,7 +218,9 @@ public sealed class QuotaLedgerStore(string? path = null)
 /// <summary>Serial session state, with no additive merge of usage across rescans.</summary>
 public sealed class QuotaLedgerSession
 {
+    private sealed record PublishedLedger(QuotaLedgerView View, QuotaObservation? Weekly, DateTimeOffset Snapshot, bool HasWarning);
     private readonly object gate = new();
+    private readonly object publicationGate = new();
     private readonly QuotaLedgerStore store;
     private QuotaLedgerDocument document;
     private ScanResult? lastScan;
@@ -230,35 +232,48 @@ public sealed class QuotaLedgerSession
     private string? warning;
     private bool corrupt;
     private long generation;
-    public long Generation { get { lock (gate) return generation; } }
+    private long scanGeneration = -1;
+    private PublishedLedger published;
+    public long Generation => Interlocked.Read(ref generation);
     public void Suspend(bool sourceEnabled)
     {
-        lock (gate)
+        lock (publicationGate)
         {
-            generation++;
-            enabled = sourceEnabled;
-            lastScan = null;
-            currentReport = null;
-            latestWeekly = null;
-            observedResetCounts = null;
+            Interlocked.Increment(ref generation);
+            var previous = published;
+            var status = previous.View.StoreCorrupt ? previous.View.Status : SourceStatusText(sourceEnabled);
+            Volatile.Write(ref published, new(previous.View with {
+                Current = null, NativeSourceAvailable = false, Status = status,
+                ObservedResetCounts = null, AwaitingResetUpdate = false
+            }, null, previous.Snapshot, previous.View.StoreCorrupt));
         }
     }
     public QuotaLedgerSession(QuotaLedgerStore? storage = null)
     {
         store = storage ?? new();
         var loaded = store.Load(); document = loaded.Document; warning = loaded.Error; corrupt = warning is not null;
+        published = new(new(document.Cycles, null, false, warning ?? SourceStatusText(true),
+            corrupt, document.ClearedEndedBeforeUtc), null, default, corrupt);
     }
-    private bool SourceAvailable => enabled && lastScan?.Statuses.Any(s => s.Provider == Providers.Codex && s.State is SourceState.Ready or SourceState.Warning) == true;
+    private bool SourceAvailable => scanGeneration == Generation && enabled
+        && lastScan?.Statuses.Any(s => s.Provider == Providers.Codex && s.State is SourceState.Ready or SourceState.Warning) == true;
     public void Update(ScanResult scan, bool sourceEnabled, DateTimeOffset snapshot, bool rebuild = false, long? expectedGeneration = null)
     {
         lock (gate)
         {
-            if (expectedGeneration is { } expected && expected != generation) return;
+            var updateGeneration = expectedGeneration ?? Generation;
+            if (updateGeneration != Generation) return;
+            scanGeneration = updateGeneration;
             lastScan = scan; enabled = sourceEnabled; lastSnapshot = snapshot.ToUniversalTime();
             var sourceAvailable = SourceAvailable;
             latestWeekly = sourceAvailable ? scan.LatestQuotas(lastSnapshot).FirstOrDefault(o => o.IsWeekly) : null;
             observedResetCounts = sourceAvailable ? QuotaResetCounts.From(scan.QuotaObservations, lastSnapshot) : null;
             currentReport = latestWeekly is { } weekly && !weekly.IsExpired(lastSnapshot) ? Current(scan, lastSnapshot, weekly) : null;
+            if (scan.CodexScanPartial)
+            {
+                Publish(updateGeneration);
+                return;
+            }
             var retained = (rebuild ? Array.Empty<QuotaCycle>() : document.Cycles)
                 .Where(c => c.Report.EndUtc > lastSnapshot.AddDays(-90)).ToDictionary(c => c.Key, StringComparer.Ordinal);
             if (sourceAvailable)
@@ -288,25 +303,64 @@ public sealed class QuotaLedgerSession
                     retained[pair.Key] = pair.Value with { Archived = true };
             var candidate = new QuotaLedgerDocument(1, Pricing.CatalogVersion, rebuild ? null : document.ClearedEndedBeforeUtc,
                 lastSnapshot, retained.Values.OrderByDescending(c => c.Report.EndUtc).ToArray());
-            if (corrupt && !rebuild) return;
-            try { store.Save(candidate, rebuild); document = candidate; corrupt = false; warning = null; }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
-            { warning = "账本保存失败，旧文件已保留：" + ex.Message; }
+            if (updateGeneration != Generation) return;
+            if ((!corrupt || rebuild) && (rebuild || !SameContent(document, candidate)))
+            {
+                try { store.Save(candidate, rebuild); document = candidate; corrupt = false; warning = null; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+                { warning = "账本保存失败，旧文件已保留：" + ex.Message; }
+            }
+            Publish(updateGeneration);
         }
     }
+
+    private static bool SameContent(QuotaLedgerDocument saved, QuotaLedgerDocument candidate) =>
+        saved.ClearedEndedBeforeUtc == candidate.ClearedEndedBeforeUtc
+        && saved.PricingVersion == candidate.PricingVersion
+        && saved.Cycles.Count == candidate.Cycles.Count
+        && saved.Cycles.Zip(candidate.Cycles).All(pair => SameCycle(pair.First, pair.Second));
+
+    private static bool SameCycle(QuotaCycle saved, QuotaCycle candidate)
+    {
+        if (ReferenceEquals(saved, candidate)) return true;
+        var original = saved.Report;
+        var updated = candidate.Report;
+        return saved.Key == candidate.Key && saved.Archived == candidate.Archived
+            && original.Models.SequenceEqual(updated.Models) && original.Days.SequenceEqual(updated.Days)
+            && original == (updated with {
+                Models = original.Models, Days = original.Days, GeneratedAtUtc = original.GeneratedAtUtc,
+                StatisticsEndUtc = original.StatisticsEndUtc, StatisticsEndLocal = original.StatisticsEndLocal
+            });
+    }
+
+    private static string SourceStatusText(bool enabled) => enabled
+        ? "原生 Codex 来源读取失败或尚未扫描，当前周期不可确认。"
+        : "原生 Codex 来源已关闭，历史归档仍保留。";
+    private const string AwaitingReset = "周配额已到重置时间，等待新周期日志。";
+
+    private void Publish(long updateGeneration)
+    {
+        var available = SourceAvailable;
+        var status = warning ?? (!available
+            ? (enabled && lastScan?.CodexScanPartial == true
+                ? "部分 Codex 日志不可读，账本暂停更新，历史归档仍保留。" : SourceStatusText(enabled))
+            : currentReport is null ? "日志未提供可确认的当前周配额周期；不会推算新周期或归零。"
+            : "仅本机原生 Codex 日志；账本保留最近 90 天。");
+        var view = new QuotaLedgerView(document.Cycles, currentReport, available, status, corrupt, document.ClearedEndedBeforeUtc)
+            { ObservedResetCounts = observedResetCounts };
+        lock (publicationGate)
+        {
+            if (updateGeneration == Generation)
+                Volatile.Write(ref published, new(view, latestWeekly, lastSnapshot, warning is not null));
+        }
+    }
+
     public QuotaLedgerView View(DateTimeOffset? now = null)
     {
-        lock (gate)
-        {
-            var waiting = latestWeekly?.IsExpired(now ?? lastSnapshot) == true;
-            var current = waiting ? null : currentReport;
-            var status = warning ?? (!enabled ? "原生 Codex 来源已关闭，历史归档仍保留。"
-                : !SourceAvailable ? "原生 Codex 来源读取失败或尚未扫描，当前周期不可确认。"
-                : waiting ? "周配额已到重置时间，等待新周期日志。"
-                : current is null ? "日志未提供可确认的当前周配额周期；不会推算新周期或归零。" : "仅本机原生 Codex 日志；账本保留最近 90 天。");
-            return new(document.Cycles, current, SourceAvailable, status, corrupt, document.ClearedEndedBeforeUtc)
-                { AwaitingResetUpdate = waiting, ObservedResetCounts = observedResetCounts };
-        }
+        var snapshot = Volatile.Read(ref published);
+        if (snapshot.Weekly?.IsExpired(now ?? snapshot.Snapshot) != true) return snapshot.View;
+        return snapshot.View with { Current = null, AwaitingResetUpdate = true,
+            Status = snapshot.HasWarning ? snapshot.View.Status : AwaitingReset };
     }
     private static QuotaReport Current(ScanResult scan, DateTimeOffset snapshot, QuotaObservation observation)
     {
@@ -334,6 +388,13 @@ public sealed class QuotaLedgerSession
             var candidate = document with { ClearedEndedBeforeUtc = lastSnapshot,
                 Cycles = document.Cycles.Where(c => c.Report.EndUtc > lastSnapshot).ToArray() };
             store.Save(candidate); document = candidate;
+            lock (publicationGate)
+            {
+                var previous = published;
+                Volatile.Write(ref published, previous with { View = previous.View with {
+                    Cycles = document.Cycles, ClearedEndedBeforeUtc = document.ClearedEndedBeforeUtc
+                } });
+            }
         }
     }
     public void Rebuild()
@@ -341,7 +402,7 @@ public sealed class QuotaLedgerSession
         lock (gate)
         {
             if (!SourceAvailable || lastScan is null) throw new InvalidOperationException("重建前请先启用并成功扫描原生 Codex 来源");
-            Update(lastScan, enabled, lastSnapshot, true);
+            Update(lastScan, enabled, lastSnapshot, true, expectedGeneration: scanGeneration);
         }
     }
 }

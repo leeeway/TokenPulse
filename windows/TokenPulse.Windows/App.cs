@@ -6,6 +6,7 @@ namespace TokenPulse.Windows;
 
 internal sealed class App : Application
 {
+    private sealed record LedgerRefresh(ScanResult Scan, bool Enabled, DateTimeOffset ObservedAt, long Generation);
     private readonly SettingsStore store = new();
     private readonly LogScanner scanner = new();
     private readonly OllamaClient ollama = new();
@@ -24,6 +25,8 @@ internal sealed class App : Application
     private TrayIcon? tray;
     private QuotaLedgerSession? ledger;
     private QuotaLedgerWindow? ledgerWindow;
+    private LedgerRefresh? pendingLedgerRefresh;
+    private bool updatingLedger;
     private Mutex? instance;
     private bool ownsMutex, refreshing, settingsOpen;
     private ScanResult? scan;
@@ -124,18 +127,20 @@ internal sealed class App : Application
                 {
                     if (currentSettings != settings || stopping.IsCancellationRequested) return;
                     var observedAt = DateTimeOffset.UtcNow;
-                    if (ledger is { } session)
-                        await Task.Run(() => session.Update(result, currentSettings.EnableCodex, observedAt,
-                            expectedGeneration: ledgerGeneration), stopping.Token);
-                    if (currentSettings != settings || stopping.IsCancellationRequested) return;
                     scan = result; scanSettings = currentSettings;
-                    quotas = currentSettings.EnableCodex ? result.LatestQuotas(observedAt) : [];
+                    var verified = currentSettings.EnableCodex ? result.LatestQuotas(observedAt) : [];
+                    quotas = currentSettings.EnableCodex && result.CodexScanPartial
+                        ? QuotaObservation.LatestByWindow(quotas.Concat(verified), observedAt) : verified;
                     hasUnverifiedQuota = currentSettings.EnableCodex && result.RateLimits.Any(rate => rate.Provider == Providers.Codex);
                     var shownAt = DateTimeOffset.UtcNow;
                     UpdateQuotaTime(shownAt);
                     ScheduleQuotaReset(shownAt);
-                    ledgerWindow?.Refresh();
-                    if (currentSettings.EnableQuotaNotifications) NotifyQuota(shownAt);
+                    if (ledger is { } session && ledgerGeneration is { } generation)
+                    {
+                        pendingLedgerRefresh = new(result, currentSettings.EnableCodex, observedAt, generation);
+                        if (!updatingLedger) _ = UpdateLedgerAsync(session);
+                    }
+                    if (currentSettings.EnableQuotaNotifications) NotifyQuota(verified.Where(q => quotas.Contains(q)), shownAt);
                     localModels = new([], currentSettings.EnableOllama ? "正在查询 Ollama…" : "Ollama 查询已关闭");
                     dashboard?.ShowError(settingsWarning);
                     await RenderAsync();
@@ -157,6 +162,29 @@ internal sealed class App : Application
             quotaRefreshPending = false;
             if (refreshAgain && !stopping.IsCancellationRequested) _ = RefreshAsync();
         }
+    }
+
+    private async Task UpdateLedgerAsync(QuotaLedgerSession session)
+    {
+        updatingLedger = true;
+        try
+        {
+            // While disk work is pending, keep only the newest scan
+            // result. Ledger reports are rebuilt from each snapshot.
+            while (!stopping.IsCancellationRequested && pendingLedgerRefresh is { } pending)
+            {
+                pendingLedgerRefresh = null;
+                try
+                {
+                    await Task.Run(() => session.Update(pending.Scan, pending.Enabled, pending.ObservedAt,
+                        expectedGeneration: pending.Generation), stopping.Token);
+                    if (!stopping.IsCancellationRequested && session.Generation == pending.Generation) ledgerWindow?.Refresh();
+                }
+                catch (OperationCanceledException) when (stopping.IsCancellationRequested) { break; }
+                catch (Exception ex) { dashboard?.ShowError("账本更新失败：" + ex.Message); }
+            }
+        }
+        finally { updatingLedger = false; }
     }
     private void UpdateQuotaTime(DateTimeOffset now)
     {
@@ -188,10 +216,10 @@ internal sealed class App : Application
         }
     }
 
-    private void NotifyQuota(DateTimeOffset now)
+    private void NotifyQuota(IEnumerable<QuotaObservation> observations, DateTimeOffset now)
     {
         if (tray is null) return;
-        var alerts = quotaAlerts.Claim(quotas, now);
+        var alerts = quotaAlerts.Claim(observations, now);
         if (alerts.Count == 0) return;
         try
         {
@@ -297,6 +325,7 @@ internal sealed class App : Application
                 ScheduleQuotaReset(DateTimeOffset.UtcNow);
             }
             settings = candidate; settingsWarning = null;
+            pendingLedgerRefresh = null;
             ledger?.Suspend(candidate.EnableCodex);
             ledgerWindow?.Refresh();
             dashboard?.SetDataPending();

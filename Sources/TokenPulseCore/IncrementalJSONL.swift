@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// One cache per source. Commits complete lines and previews an unfinished final
 /// line on a copy, so a valid JSON object without LF is visible without duplication.
@@ -31,8 +32,7 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
         var preview: State
         var tail: Data
         var lines: Int
-        var prefix: Data
-        var suffix: Data
+        var digest: SHA256.Digest
     }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
@@ -67,17 +67,24 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                     maximumReadSize = max(maximumReadSize, data.count)
                     return data
                 }
-                var previous = entries[key]
-                if let old = previous {
-                    // Identity + boundary checks detect rotation/replacement and rewrites.
-                    // A size decrease or same-size edit always rebuilds the parser state.
-                    if !stamp.sameFile(old.stamp) || stamp.size <= old.stamp.size {
-                        previous = nil
-                    } else {
-                        let prefix = try read(0, old.prefix.count)
-                        let suffix = try read(old.stamp.size - UInt64(old.suffix.count), old.suffix.count)
-                        if prefix != old.prefix || suffix != old.suffix { previous = nil }
+                let chunkSize = 256 * 1024
+                var previous: Entry?
+                var digest = SHA256()
+                if let old = entries[key], stamp.sameFile(old.stamp), stamp.size > old.stamp.size {
+                    // A larger file can also have been rewritten in place. Hash the
+                    // existing prefix before reusing its cumulative parser state.
+                    var checked: UInt64 = 0
+                    while checked < old.stamp.size {
+                        let count = Int(min(UInt64(chunkSize), old.stamp.size - checked))
+                        try autoreleasepool {
+                            let chunk = try read(checked, count)
+                            guard chunk.count == count else { throw CocoaError(.fileReadUnknown) }
+                            digest.update(data: chunk)
+                        }
+                        checked += UInt64(count)
                     }
+                    if digest.finalize() == old.digest { previous = old }
+                    else { digest = SHA256() }
                 }
                 let offset = previous?.stamp.size ?? 0
                 var state = previous?.committed ?? initial
@@ -85,9 +92,7 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                 var pending = previous?.tail ?? Data()
                 let boundarySize = Int(min(128, stamp.size))
                 let suffixOffset = stamp.size - UInt64(boundarySize)
-                let prefix: Data
-                if let previous, previous.prefix.count == boundarySize { prefix = previous.prefix }
-                else { prefix = try read(0, boundarySize) }
+                let prefix = try read(0, boundarySize)
                 let suffix = try read(suffixOffset, boundarySize)
                 guard prefix.count == boundarySize, suffix.count == boundarySize else { throw CocoaError(.fileReadUnknown) }
                 var position = offset
@@ -95,10 +100,11 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                 // whole large file through FileHandle leaves a large reusable malloc
                 // buffer in a long-lived menu bar process even after it is freed.
                 while position < stamp.size {
-                    let count = Int(min(256 * 1024, stamp.size - position))
+                    let count = Int(min(UInt64(chunkSize), stamp.size - position))
                     try autoreleasepool {
                         let chunk = try read(position, count)
                         guard chunk.count == count else { throw CocoaError(.fileReadUnknown) }
+                        digest.update(data: chunk)
                         pending.append(chunk)
                         if let newline = chunk.lastIndex(of: 0x0A) {
                             let trailingBytes = chunk.distance(from: chunk.index(after: newline), to: chunk.endIndex)
@@ -130,7 +136,7 @@ final class IncrementalJSONL<State: Sendable>: @unchecked Sendable {
                     else { throw CocoaError(.fileReadUnknown) }
                 }
                 entries[key] = Entry(stamp: stamp, committed: state, preview: preview, tail: tail,
-                    lines: lines, prefix: prefix, suffix: suffix)
+                    lines: lines, digest: digest.finalize())
                 generation &+= 1
                 return Result(state: preview, readSucceeded: true)
             } catch {

@@ -1,9 +1,13 @@
+using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
+
 namespace TokenPulse.Core;
 
 /// <summary>Serial, read-only scans. Changed files are reparsed in full to preserve cumulative deltas.</summary>
 public sealed class LogScanner
 {
-    private sealed record Cached(DateTime Mtime, long Size, ParsedLog Log);
+    private readonly record struct FileIdentity(ulong Volume, ulong Low, ulong High);
+    private sealed record Cached(FileIdentity Identity, DateTime Mtime, long Size, ParsedLog Log);
     private readonly Dictionary<(string Provider, string Path), Cached> cache = new();
     private readonly object sync = new();
 
@@ -16,6 +20,7 @@ public sealed class LogScanner
             List<QuotaObservation> observations = [];
             List<UsageEvent> nativeCodexEvents = [];
             List<SourceStatus> statuses = [];
+            var codexScanPartial = false;
             HashSet<(string Provider, string Path)> visited = [];
             foreach (var (provider, root, singleFile, enabled) in settings.LogSources())
             {
@@ -49,20 +54,22 @@ public sealed class LogScanner
                             var before = new FileInfo(file);
                             var mtime = before.LastWriteTimeUtc;
                             var size = before.Length;
+                            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            var snapshotSize = stream.Length;
+                            var identity = GetIdentity(stream.SafeFileHandle);
                             ParsedLog parsed;
-                            if (cache.TryGetValue(key, out var entry) && entry.Mtime == mtime && entry.Size == size) parsed = entry.Log;
+                            if (identity is { } known && cache.TryGetValue(key, out var entry) && entry.Identity == known
+                                && entry.Mtime == mtime && entry.Size == size && snapshotSize == size) parsed = entry.Log;
                             else
                             {
-                                using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                                var snapshotSize = stream.Length;
                                 using var reader = new StreamReader(new LogSnapshotStream(stream, snapshotSize));
                                 var session = provider == Providers.Antigravity
                                     ? Directory.GetParent(file)?.Parent?.Parent?.Name ?? Path.GetFileNameWithoutExtension(file)
                                     : Path.GetFileNameWithoutExtension(file);
                                 parsed = LogParser.Parse(reader, provider, session, new DateTimeOffset(mtime), cancellationToken);
                                 var after = new FileInfo(file);
-                                if (snapshotSize == size && after.Exists && after.LastWriteTimeUtc == mtime && after.Length == size)
-                                    cache[key] = new(mtime, size, parsed);
+                                if (identity is { } current && snapshotSize == size && after.Exists && after.LastWriteTimeUtc == mtime && after.Length == size)
+                                    cache[key] = new(current, mtime, size, parsed);
                                 else cache.Remove(key);
                             }
                             events.AddRange(parsed.Events);
@@ -85,6 +92,7 @@ public sealed class LogScanner
                 catch (Exception ex) when (IsFileError(ex)) { errors.Add(ex.Message); }
                 if (errors.Count > 0) state = SourceState.Error;
                 else if (malformedLines > 0 || unknownDates > 0) state = SourceState.Warning;
+                if (provider == Providers.Codex && count > 0 && errors.Count > 0) codexScanPartial = true;
                 var message = state == SourceState.Missing || count == 0 && errors.Count == 0 ? "未发现日志"
                     : $"已读取 {count} 个文件 · {validEvents} 条用量记录";
                 if (malformedLines > 0) message += $" · {malformedLines} 行 JSON 损坏，已跳过";
@@ -95,9 +103,35 @@ public sealed class LogScanner
             }
             foreach (var key in cache.Keys.Where(key => !visited.Contains(key)).ToArray()) cache.Remove(key);
             return new(events, limits.GroupBy(r => r.Provider).Select(g => g.MaxBy(r => r.UpdatedAt)!).ToArray(), statuses)
-            { NativeCodexEvents = nativeCodexEvents, QuotaObservations = observations.Distinct().OrderBy(o => o.RecordedAtUtc).ToArray() };
+            {
+                NativeCodexEvents = nativeCodexEvents,
+                QuotaObservations = observations.Distinct().OrderBy(o => o.RecordedAtUtc).ToArray(),
+                CodexScanPartial = codexScanPartial
+            };
         }
     }
+
+    private static FileIdentity? GetIdentity(SafeFileHandle file)
+    {
+        const int fileIdInfo = 18;
+        if (!OperatingSystem.IsWindows()
+            || !GetFileInformationByHandleEx(file, fileIdInfo, out var info, (uint)Marshal.SizeOf<NativeFileId>())
+            || (info.Low == 0 && info.High == 0)) return null;
+        return new(info.Volume, info.Low, info.High);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeFileId
+    {
+        public ulong Volume;
+        public ulong Low;
+        public ulong High;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int informationClass,
+        out NativeFileId information, uint size);
 
     private static bool IsFileError(Exception ex) => ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException;
     private static IEnumerable<string> Walk(string root, string provider, List<string> errors, CancellationToken cancellationToken)

@@ -60,9 +60,11 @@ public sealed record ScanResult(IReadOnlyList<UsageEvent> Events, IReadOnlyList<
     public IReadOnlyList<QuotaObservation> QuotaObservations { get; init; } = [];
     [System.Text.Json.Serialization.JsonIgnore]
     public IReadOnlyList<UsageEvent> NativeCodexEvents { get; init; } = [];
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool CodexScanPartial { get; init; }
 
     public QuotaObservation[] LatestQuotas(DateTimeOffset now) =>
-        Statuses.Any(s => s.Provider == Providers.Codex && s.State is SourceState.Ready or SourceState.Warning)
+        CodexScanPartial || Statuses.Any(s => s.Provider == Providers.Codex && s.State is SourceState.Ready or SourceState.Warning)
             ? QuotaObservation.LatestByWindow(QuotaObservations, now) : [];
 }
 public sealed record LocalModel(string Name, long SizeBytes, long VramBytes);
